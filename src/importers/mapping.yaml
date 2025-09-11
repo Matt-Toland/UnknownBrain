@@ -1,0 +1,65 @@
+zapier_granola:
+  meeting_id:
+    - id
+    - note_id
+    - meeting_id
+  
+  company:
+    - company
+    - organization
+    - client
+    - account
+  
+  date:
+    - date
+    - created_at
+    - meeting_date
+    - timestamp
+  
+  participants:
+    - participants
+    - attendees
+    - people
+    - members
+  
+  content:
+    - content
+    - body
+    - text
+    - notes
+    - description
+  
+  title:
+    - title
+    - subject
+    - name
+    - meeting_title
+  
+  url:
+    - url
+    - link
+    - granola_url
+    - share_url
+  
+  folder:
+    - folder
+    - category
+    - project
+    - workspace
+
+default_values:
+  desk: "Unknown"
+  source: "zapier-granola"
+
+content_types:
+  html:
+    - "text/html"
+    - "html"
+  markdown:
+    - "text/markdown"
+    - "markdown"
+    - "md"
+  plaintext:
+    - "text/plain"
+    - "plain"
+    - "txt"
