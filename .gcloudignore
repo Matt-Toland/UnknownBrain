@@ -1,0 +1,92 @@
+# .gcloudignore - Files to exclude from Cloud Build and deployment
+
+# Git and version control
+.git
+.gitignore
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual environments
+venv/
+env/
+ENV/
+
+# Local development files
+.env
+.env.local
+.env.dev
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Local data directories
+data/transcripts/*
+!data/transcripts/.gitkeep
+data/json/*
+!data/json/.gitkeep
+out/*
+!out/.gitkeep
+cache/
+
+# Test and coverage
+.coverage
+.pytest_cache/
+htmlcov/
+.tox/
+.coverage.*
+
+# Credentials (security)
+gcp_service_account_creds.json
+*.key
+*.pem
+*.p12
+
+# Logs
+*.log
+logs/
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+
+# Documentation and markdown (except README)
+*.md
+!README.md
+
+# Additional API requirements file (already included in main requirements.txt)
+requirements-api.txt

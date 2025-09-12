@@ -271,6 +271,84 @@ python -m src.cli upload-bq-merge --help    # BigQuery upload options
 python -m src.cli compare-models --help     # Model comparison options
 ```
 
+## Cloud Deployment (Production)
+
+### Google Cloud Run Deployment
+
+For production use, deploy to Google Cloud Run for automatic scaling, Cloud Storage integration, and serverless operation.
+
+#### Quick Deploy
+```bash
+# 1. Set your Google Cloud project
+export GOOGLE_CLOUD_PROJECT=your-project-id
+
+# 2. Run deployment script
+./deploy.sh
+```
+
+The deployment script automatically:
+- Enables required GCP APIs
+- Creates Cloud Storage bucket for transcripts
+- Creates BigQuery dataset
+- Builds and deploys to Cloud Run
+- Sets up proper networking and permissions
+
+#### Manual Deployment Steps
+```bash
+# Enable APIs
+gcloud services enable run.googleapis.com cloudbuild.googleapis.com containerregistry.googleapis.com
+
+# Create Cloud Storage bucket
+gsutil mb gs://unknown-brain-transcripts
+
+# Deploy with Cloud Build
+gcloud builds submit --config cloudbuild.yaml
+
+# Set environment variables
+gcloud run services update unknown-brain --region=us-central1 \
+    --set-env-vars OPENAI_API_KEY=your-key,DEFAULT_LLM_MODEL=gpt-5-mini,GCS_BUCKET_NAME=unknown-brain-transcripts
+```
+
+#### API Endpoints (Cloud Run)
+Once deployed, your API will be available at:
+```
+https://unknown-brain-xxx.run.app/
+├── GET  /health              # Health check
+├── GET  /docs                # Interactive API documentation  
+├── POST /process-transcript  # Full pipeline processing
+├── POST /process-batch       # Batch processing
+├── POST /ingest              # Convert transcript to JSON
+├── POST /score               # Score with LLM
+├── POST /upload-bq           # Upload to BigQuery
+└── GET  /status/{id}         # Check processing status
+```
+
+#### Production Features
+- **Auto-scaling**: 0-10 instances based on demand
+- **60-minute timeout**: Handles long LLM processing
+- **Cloud Storage**: Automatic file management
+- **BigQuery integration**: Built-in analytics
+- **Caching**: GCS-based result caching
+- **Error handling**: Comprehensive retry logic
+
+#### Cost Estimate (1000 transcripts/month)
+- Cloud Run: ~$2-3/month
+- Cloud Storage: ~$0.02/month  
+- BigQuery: ~$5/month (depending on queries)
+- GPT-5-mini API: Main cost driver (~$20-50/month)
+
+#### Monitoring & Logs
+```bash
+# View logs
+gcloud logs read "resource.type=cloud_run_revision"
+
+# Monitor metrics
+gcloud run services describe unknown-brain --region=us-central1
+```
+
 ---
 
 Built for UNKNOWN's business development workflow. Analyzes real meeting transcripts from Granola→Zapier→Drive pipeline to identify qualified talent acquisition opportunities using state-of-the-art GPT-5 models.
+
+**Local Development** → CLI-based processing with local files  
+**Production Deployment** → Cloud Run API with GCS storage and BigQuery analytics
