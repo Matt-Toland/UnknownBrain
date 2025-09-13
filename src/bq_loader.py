@@ -17,19 +17,21 @@ class BigQueryLoader:
     """Handles loading transcript data to BigQuery"""
     
     def __init__(self, credentials_path: str = "gcp_service_account_creds.json"):
-        """Initialize BigQuery client with service account credentials"""
+        """Initialize BigQuery client with service account credentials or default auth"""
         self.credentials_path = Path(credentials_path)
-        
-        # Set environment variable for authentication
-        os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = str(self.credentials_path.absolute())
         
         # Get configuration from environment
         self.project_id = os.getenv('BQ_PROJECT_ID', 'angular-stacker-471711-k4')
         self.dataset_name = os.getenv('BQ_DATASET', 'unknown_brain')
         self.table_name = os.getenv('BQ_TABLE', 'meeting_transcripts')
         
-        # Initialize BigQuery client
-        self.client = bigquery.Client(project=self.project_id)
+        # Initialize BigQuery client - use default credentials on Cloud Run
+        if self.credentials_path.exists():
+            os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = str(self.credentials_path.absolute())
+            self.client = bigquery.Client(project=self.project_id)
+        else:
+            # Use default service account on Cloud Run
+            self.client = bigquery.Client(project=self.project_id)
         
         console.print(f"[green]Initialized BigQuery client for project: {self.project_id}[/green]")
     

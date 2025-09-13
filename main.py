@@ -307,7 +307,7 @@ async def process_pipeline(
         else:
             importer = PlaintextImporter()
         
-        transcript = importer.import_file(temp_file_path)
+        transcript = importer.parse_file(temp_file_path)
         
         # 4. Score with LLM
         print(f"Scoring with {scoring_model}")
