@@ -5,22 +5,64 @@ FastAPI wrapper for UNKNOWN Brain CLI - Cloud Run deployment
 import os
 import json
 import asyncio
+import logging
 from typing import List, Dict, Optional
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timezone
 import uuid
+import re
 
-from fastapi import FastAPI, HTTPException, BackgroundTasks, status
+from fastapi import FastAPI, HTTPException, BackgroundTasks, status, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
+from cloudevents.http import from_http
 import uvicorn
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
+# Utility functions for safe type conversions
+def safe_int_convert(value) -> Optional[int]:
+    """Safely convert value to integer, handling strings and None"""
+    if value is None:
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str) and value.strip():
+        try:
+            return int(value.strip())
+        except ValueError:
+            return None
+    return None
+
+def convert_to_utc_timestamp(timestamp_str) -> Optional[str]:
+    """Convert timezone-aware timestamp to UTC timestamp string for BigQuery"""
+    if not timestamp_str:
+        return None
+
+    try:
+        # Parse timezone-aware timestamp
+        if isinstance(timestamp_str, str):
+            # Handle formats like "2025-09-12T11:17:00+01:00"
+            dt = datetime.fromisoformat(timestamp_str)
+            # Convert to UTC and format for BigQuery TIMESTAMP
+            utc_dt = dt.astimezone(timezone.utc)
+            return utc_dt.isoformat(timespec='seconds').replace('+00:00', 'Z')
+        return None
+    except (ValueError, AttributeError):
+        # If parsing fails, return None
+        return None
 
 # Import existing CLI functionality
 from src.importers.plaintext import PlaintextImporter
 from src.importers.granola_drive import GranolaDriveImporter
 from src.llm_scorer import LLMScorer
 from src.scoring import OutputGenerator
-from src.bq_loader import BigQueryLoader
+from src.bq_loader import BigQueryLoader, upload_to_new_bigquery
 from src.gcs_client import GCSClient, get_gcs_client
 
 # Initialize FastAPI app
@@ -250,6 +292,38 @@ async def upload_to_bigquery():
             detail=f"BigQuery upload failed: {str(e)}"
         )
 
+
+@app.post("/upload-bq-new", tags=["Pipeline Steps"])
+async def upload_to_new_bigquery_endpoint():
+    """
+    Upload scored results to new meeting_intel BigQuery table with JSON columns
+    """
+    try:
+        # Check for new format export file
+        jsonl_path = Path("out/bq_export_new.jsonl")
+
+        if jsonl_path.exists():
+            success = upload_to_new_bigquery(jsonl_path, use_merge=True)
+
+            if success:
+                return {
+                    "message": "Upload to new meeting_intel table completed",
+                    "table": "meeting_intel"
+                }
+            else:
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="Upload failed - check logs"
+                )
+        else:
+            raise HTTPException(status_code=404, detail="New format export file not found")
+
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"New BigQuery upload failed: {str(e)}"
+        )
+
 @app.get("/models", tags=["Configuration"])
 async def list_available_models():
     """
@@ -264,6 +338,154 @@ async def list_available_models():
         ],
         "default": os.getenv("DEFAULT_LLM_MODEL", "gpt-5-mini")
     }
+
+@app.post("/cloudevents", tags=["Automation"])
+async def handle_storage_event(
+    request: Request,
+    background_tasks: BackgroundTasks
+):
+    """
+    Handle Cloud Storage events via Eventarc
+    Automatically processes new transcripts when uploaded
+    """
+    try:
+        # Parse CloudEvents
+        headers = dict(request.headers)
+        body = await request.body()
+        event = from_http(headers, body)
+        
+        # Extract event data
+        event_type = event['type']
+        data = event.data
+        
+        # Log for debugging
+        logger.info(f"Received event: {event_type}")
+        logger.info(f"File: {data.get('name')}")
+        logger.info(f"Generation: {data.get('generation')}")
+        
+        # Only process new files in transcripts/ directory
+        file_name = data.get('name', '')
+        bucket = data.get('bucket', '')
+        
+        if (event_type == "google.cloud.storage.object.v1.finalized"
+            and file_name.startswith("transcripts/")
+            and (file_name.endswith(".txt") or file_name.endswith(".md"))):
+            
+            # Use generation for idempotency (prevents double processing on retries)
+            generation = data.get('generation')
+            meeting_id = f"auto-{Path(file_name).stem}-{generation or event['id']}"
+            
+            # Check if already processing/processed
+            if meeting_id in processing_status:
+                logger.info(f"Already processing/processed: {meeting_id}")
+                return {
+                    "status": "duplicate",
+                    "meeting_id": meeting_id,
+                    "message": "Already being processed or completed"
+                }
+            
+            # Add to processing queue
+            processing_status[meeting_id] = ProcessingStatus(
+                meeting_id=meeting_id,
+                status="pending",
+                created_at=datetime.now().isoformat()
+            )
+            
+            # Process in background
+            background_tasks.add_task(
+                process_pipeline,
+                bucket,
+                file_name,
+                os.getenv("DEFAULT_LLM_MODEL", "gpt-5-mini"),
+                meeting_id
+            )
+            
+            logger.info(f"Accepted for processing: {meeting_id}")
+            return {
+                "status": "accepted",
+                "meeting_id": meeting_id,
+                "file": file_name,
+                "generation": generation
+            }
+        
+        # Ignore non-transcript files
+        logger.info(f"Ignored file: {file_name}")
+        return {
+            "status": "ignored",
+            "reason": f"Not a transcript file or wrong directory: {file_name}"
+        }
+    
+    except Exception as e:
+        logger.error(f"Error handling CloudEvent: {str(e)}")
+        return {
+            "status": "error",
+            "error": str(e)
+        }
+
+@app.get("/recent-jobs", tags=["Status"])
+async def get_recent_jobs(limit: int = 10):
+    """Get list of recent processing jobs"""
+    jobs = []
+    # Get the most recent jobs (last N items)
+    recent_items = list(processing_status.items())[-limit:]
+    
+    for mid, status in recent_items:
+        jobs.append({
+            "meeting_id": mid,
+            "status": status.status,
+            "created_at": status.created_at,
+            "completed_at": getattr(status, 'completed_at', None),
+            "score": getattr(status, 'score', None),
+            "error": status.error[:100] + "..." if status.error and len(status.error) > 100 else status.error
+        })
+    
+    return {
+        "jobs": jobs,
+        "total": len(processing_status),
+        "showing": len(jobs)
+    }
+
+@app.get("/cached-results", tags=["Status"])
+async def list_cached_results():
+    """List cached scoring results from GCS"""
+    try:
+        gcs = GCSClient()
+        today = datetime.now().strftime('%Y-%m-%d')
+        cache_prefix = f"cache/{today}/"
+        
+        blobs = gcs.client.list_blobs(
+            gcs.bucket_name,
+            prefix=cache_prefix,
+            max_results=20
+        )
+        
+        results = []
+        for blob in blobs:
+            # Extract meeting_id from filename (remove cache prefix and .json extension)
+            name = blob.name.replace(cache_prefix, "").replace(".json", "")
+            # Remove model suffix (everything after last dash)
+            meeting_id = name.rsplit("-", 1)[0] if "-" in name else name
+            
+            results.append({
+                "cache_file": blob.name,
+                "meeting_id": meeting_id,
+                "model": name.split("-")[-1] if "-" in name else "unknown",
+                "created": blob.time_created.isoformat() if blob.time_created else None,
+                "size_bytes": blob.size
+            })
+        
+        return {
+            "cached_results": results,
+            "count": len(results),
+            "date": today
+        }
+        
+    except Exception as e:
+        logger.error(f"Error listing cached results: {e}")
+        return {
+            "error": str(e),
+            "cached_results": []
+        }
 
 async def process_pipeline(
     bucket: str, 
@@ -292,7 +514,7 @@ async def process_pipeline(
             print(f"Using cached result for {meeting_id}")
             processing_status[meeting_id].status = "completed"
             processing_status[meeting_id].completed_at = datetime.now().isoformat()
-            processing_status[meeting_id].score = cached_result['results']['total_score']
+            processing_status[meeting_id].score = cached_result['results']['total_qualified_sections']
             return
         
         # 2. Download file from GCS
@@ -320,12 +542,51 @@ async def process_pipeline(
         
         # 6. Upload to BigQuery
         print("Uploading to BigQuery")
-        # Create temporary JSONL file for BigQuery
+        # Create temporary JSONL file for BigQuery - explicit mapping to avoid duplicate columns
         bq_data = {
-            **transcript.__dict__,
-            **score_result.__dict__,
-            'scored_at': datetime.now().isoformat(),
-            'llm_model': scoring_model
+            # Core transcript fields
+            'meeting_id': score_result.meeting_id,
+            'date': transcript.date.isoformat() if transcript.date else None,  # BigQuery DATE expects YYYY-MM-DD format
+            'company': getattr(transcript, 'company', None),
+            'participants': getattr(transcript, 'participants', []),
+            'desk': getattr(transcript, 'desk', 'Unknown'),
+            'source': getattr(transcript, 'source', None),
+            # Granola specific fields
+            'granola_note_id': getattr(transcript, 'granola_note_id', None),
+            'title': getattr(transcript, 'title', None),
+            'creator_name': getattr(transcript, 'creator_name', None),
+            'creator_email': getattr(transcript, 'creator_email', None),
+            'enhanced_notes': getattr(transcript, 'enhanced_notes', None),
+            'my_notes': getattr(transcript, 'my_notes', None),
+            'full_transcript': getattr(transcript, 'full_transcript', None),
+            'zapier_step_id': safe_int_convert(getattr(transcript, 'zapier_step_id', None)),
+            'granola_link': getattr(transcript, 'granola_link', None),
+            'calendar_event_time': convert_to_utc_timestamp(getattr(transcript, 'calendar_event_time', None)),
+            'calendar_event_id': getattr(transcript, 'calendar_event_id', None),
+            'calendar_event_title': getattr(transcript, 'calendar_event_title', None),
+            'file_created_timestamp': safe_int_convert(getattr(transcript, 'file_created_timestamp', None)),
+            # Scoring fields
+            'total_qualified_sections': score_result.total_qualified_sections,
+            'qualified': score_result.qualified,
+            'scored_at': datetime.now(timezone.utc).isoformat(timespec='seconds'),
+            'llm_model': scoring_model,
+            # Flattened check results
+            'now_score': score_result.checks['now']['score'],
+            'now_evidence': score_result.checks['now']['evidence_line'],
+            'now_timestamp': score_result.checks['now']['timestamp'],
+            'next_score': score_result.checks['next']['score'],
+            'next_evidence': score_result.checks['next']['evidence_line'],
+            'next_timestamp': score_result.checks['next']['timestamp'],
+            'measure_score': score_result.checks['measure']['score'],
+            'measure_evidence': score_result.checks['measure']['evidence_line'],
+            'measure_timestamp': score_result.checks['measure']['timestamp'],
+            'blocker_score': score_result.checks['blocker']['score'],
+            'blocker_evidence': score_result.checks['blocker']['evidence_line'],
+            'blocker_timestamp': score_result.checks['blocker']['timestamp'],
+            'fit_score': score_result.checks['fit']['score'],
+            'fit_labels': score_result.checks['fit']['fit_labels'],
+            'fit_evidence': score_result.checks['fit']['evidence_line'],
+            'fit_timestamp': score_result.checks['fit']['timestamp']
         }
         
         # Upload to BigQuery via existing loader
@@ -334,14 +595,19 @@ async def process_pipeline(
         temp_files.append(temp_jsonl_path)
         
         with open(temp_jsonl_path, 'w') as f:
-            json.dump(bq_data, f)
+            # All fields should be properly typed now, no need for default=str
+            f.write(json.dumps(bq_data) + "\n")
         
-        loader.merge_jsonl_data(temp_jsonl_path)
+        # Use WRITE_APPEND (MERGE has query issues - needs investigation)
+        loader.load_jsonl_data(temp_jsonl_path, write_disposition="WRITE_APPEND")
+
+        # Also upload to new meeting_intel table format
+        await upload_new_format_to_bigquery(transcript, score_result, scoring_model, meeting_id, temp_files)
         
         # Update status with completion
         processing_status[meeting_id].status = "completed"
         processing_status[meeting_id].completed_at = datetime.now().isoformat()
-        processing_status[meeting_id].score = score_result.total_score
+        processing_status[meeting_id].score = score_result.total_qualified_sections
         
         print(f"Successfully processed {meeting_id}")
         
@@ -354,6 +620,117 @@ async def process_pipeline(
         # Clean up temporary files
         if temp_files:
             gcs.cleanup_temp_files(temp_files)
+
+
+async def upload_new_format_to_bigquery(
+    transcript,
+    score_result,
+    model: str,
+    meeting_id: str,
+    temp_files: List[Path]
+):
+    """Upload using new meeting_intel table format with JSON blobs"""
+    try:
+        # Convert legacy score result to new format using NewScoreResult
+        from src.llm_scorer import LLMScorer
+        scorer = LLMScorer(model)
+
+        # Re-score using new format (in production, cache this to avoid double API calls)
+        new_score_result = scorer.score_transcript_new(transcript)
+
+        # Create new BigQuery data mapping
+        new_bq_data = {
+            # Core transcript fields
+            'meeting_id': new_score_result.meeting_id,
+            'date': transcript.date.isoformat() if transcript.date else None,
+            'participants': getattr(transcript, 'participants', []),
+            'desk': getattr(transcript, 'desk', 'Unknown'),
+            'source': getattr(transcript, 'source', None),
+
+            # Client info as JSON blob
+            'client_info': {
+                'client_id': new_score_result.client_info.client_id,
+                'client': new_score_result.client_info.client,
+                'domain': new_score_result.client_info.domain,
+                'size': new_score_result.client_info.size,
+                'source': new_score_result.client_info.source
+            },
+
+            # Granola specific fields
+            'granola_note_id': getattr(transcript, 'granola_note_id', None),
+            'title': getattr(transcript, 'title', None),
+            'creator_name': getattr(transcript, 'creator_name', None),
+            'creator_email': getattr(transcript, 'creator_email', None),
+            'calendar_event_title': getattr(transcript, 'calendar_event_title', None),
+            'calendar_event_id': getattr(transcript, 'calendar_event_id', None),
+            'calendar_event_time': convert_to_utc_timestamp(getattr(transcript, 'calendar_event_time', None)),
+            'granola_link': getattr(transcript, 'granola_link', None),
+            'file_created_timestamp': safe_int_convert(getattr(transcript, 'file_created_timestamp', None)),
+            'zapier_step_id': safe_int_convert(getattr(transcript, 'zapier_step_id', None)),
+
+            # Content sections
+            'enhanced_notes': getattr(transcript, 'enhanced_notes', None),
+            'my_notes': getattr(transcript, 'my_notes', None),
+            'full_transcript': getattr(transcript, 'full_transcript', None),
+
+            # Scoring results
+            'total_qualified_sections': new_score_result.total_qualified_sections,
+            'qualified': new_score_result.qualified,
+
+            # JSON blob scoring sections
+            'now': {
+                'qualified': new_score_result.now.qualified,
+                'reason': new_score_result.now.reason,
+                'summary': new_score_result.now.summary,
+                'evidence': new_score_result.now.evidence
+            },
+            'next': {
+                'qualified': new_score_result.next.qualified,
+                'reason': new_score_result.next.reason,
+                'summary': new_score_result.next.summary,
+                'evidence': new_score_result.next.evidence
+            },
+            'measure': {
+                'qualified': new_score_result.measure.qualified,
+                'reason': new_score_result.measure.reason,
+                'summary': new_score_result.measure.summary,
+                'evidence': new_score_result.measure.evidence
+            },
+            'blocker': {
+                'qualified': new_score_result.blocker.qualified,
+                'reason': new_score_result.blocker.reason,
+                'summary': new_score_result.blocker.summary,
+                'evidence': new_score_result.blocker.evidence
+            },
+            'fit': {
+                'qualified': new_score_result.fit.qualified,
+                'reason': new_score_result.fit.reason,
+                'summary': new_score_result.fit.summary,
+                'services': new_score_result.fit.services,
+                'evidence': new_score_result.fit.evidence
+            },
+
+            # Processing metadata
+            'scored_at': new_score_result.scored_at.isoformat(timespec='seconds'),
+            'llm_model': new_score_result.llm_model
+        }
+
+        # Upload to new BigQuery table using MERGE
+        temp_new_jsonl_path = Path(f"/tmp/{meeting_id}_new.jsonl")
+        temp_files.append(temp_new_jsonl_path)
+
+        with open(temp_new_jsonl_path, 'w') as f:
+            f.write(json.dumps(new_bq_data) + "\n")
+
+        success = upload_to_new_bigquery(temp_new_jsonl_path, use_merge=True)
+        if success:
+            print(f"Successfully uploaded {meeting_id} to new meeting_intel table")
+        else:
+            print(f"Failed to upload {meeting_id} to new meeting_intel table")
+
+    except Exception as e:
+        print(f"Error uploading new format to BigQuery for {meeting_id}: {e}")
+
 
 async def process_batch_pipeline(
     bucket: str,
