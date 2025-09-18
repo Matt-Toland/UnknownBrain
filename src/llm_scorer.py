@@ -4,7 +4,8 @@ from typing import List, Dict, Any, Optional
 from dotenv import load_dotenv
 from openai import OpenAI
 
-from .schemas import Transcript, Note, ScoreResult, CheckResult, FitResult
+from .schemas import Transcript, Note, ScoreResult, FitResult, NewScoreResult, SectionResult, ClientInfo
+import re
 
 # Load environment variables
 load_dotenv()
@@ -128,6 +129,203 @@ class LLMScorer:
         if isinstance(evidence, list):
             return evidence[0] if evidence else None
         return evidence
+
+    def _validate_section_response(self, result: Dict[str, Any], prompt: str, context: str, retry_count: int = 0) -> Dict[str, Any]:
+        """Validate section response matches expected schema"""
+        expected_keys = {"qualified", "reason", "summary", "evidence"}
+
+        # Check if keys match exactly
+        actual_keys = set(result.keys())
+        if actual_keys != expected_keys:
+            if retry_count < 1:
+                print(f"Invalid keys in response. Expected: {expected_keys}, Got: {actual_keys}. Retrying...")
+                retry_prompt = f"{prompt}\n\nYou returned invalid JSON. Return exactly the schema."
+                return self._make_openai_request(retry_prompt, context, retry_count + 1)
+            else:
+                return {
+                    "qualified": False,
+                    "reason": "Invalid JSON from model",
+                    "summary": "Model returned invalid response format",
+                    "evidence": None
+                }
+
+        # Check qualified is boolean
+        if not isinstance(result.get("qualified"), bool):
+            if retry_count < 1:
+                print(f"'qualified' must be boolean, got {type(result.get('qualified'))}. Retrying...")
+                retry_prompt = f"{prompt}\n\nYou returned invalid JSON. Return exactly the schema."
+                return self._make_openai_request(retry_prompt, context, retry_count + 1)
+            else:
+                return {
+                    "qualified": False,
+                    "reason": "Invalid JSON from model",
+                    "summary": "Model returned non-boolean qualified field",
+                    "evidence": None
+                }
+
+        # Check evidence length if present
+        evidence = result.get("evidence")
+        if evidence is not None:
+            word_count = len(str(evidence).split())
+            if word_count > 25:
+                if retry_count < 1:
+                    print(f"Evidence too long: {word_count} words (max 25). Retrying...")
+                    retry_prompt = f"{prompt}\n\nYou returned invalid JSON. Evidence must be ≤25 words. Return exactly the schema."
+                    return self._make_openai_request(retry_prompt, context, retry_count + 1)
+                else:
+                    # Truncate evidence to 25 words
+                    words = str(evidence).split()[:25]
+                    result["evidence"] = " ".join(words)
+
+        return result
+
+    def _validate_fit_response(self, result: Dict[str, Any], prompt: str, context: str, retry_count: int = 0) -> Dict[str, Any]:
+        """Validate FIT response matches expected schema (includes services field)"""
+        expected_keys = {"qualified", "reason", "summary", "services", "evidence"}
+
+        # Check if keys match exactly
+        actual_keys = set(result.keys())
+        if actual_keys != expected_keys:
+            if retry_count < 1:
+                print(f"Invalid keys in FIT response. Expected: {expected_keys}, Got: {actual_keys}. Retrying...")
+                retry_prompt = f"{prompt}\n\nYou returned invalid JSON. Return exactly the schema."
+                return self._make_openai_request(retry_prompt, context, retry_count + 1)
+            else:
+                return {
+                    "qualified": False,
+                    "reason": "Invalid JSON from model",
+                    "summary": "Model returned invalid response format",
+                    "services": [],
+                    "evidence": None
+                }
+
+        # Check qualified is boolean
+        if not isinstance(result.get("qualified"), bool):
+            if retry_count < 1:
+                print(f"'qualified' must be boolean, got {type(result.get('qualified'))}. Retrying...")
+                retry_prompt = f"{prompt}\n\nYou returned invalid JSON. Return exactly the schema."
+                return self._make_openai_request(retry_prompt, context, retry_count + 1)
+            else:
+                return {
+                    "qualified": False,
+                    "reason": "Invalid JSON from model",
+                    "summary": "Model returned non-boolean qualified field",
+                    "services": [],
+                    "evidence": None
+                }
+
+        # Check services is list
+        if not isinstance(result.get("services"), list):
+            if retry_count < 1:
+                print(f"'services' must be list, got {type(result.get('services'))}. Retrying...")
+                retry_prompt = f"{prompt}\n\nYou returned invalid JSON. Return exactly the schema."
+                return self._make_openai_request(retry_prompt, context, retry_count + 1)
+            else:
+                result["services"] = []
+
+        # Check evidence length if present
+        evidence = result.get("evidence")
+        if evidence is not None:
+            word_count = len(str(evidence).split())
+            if word_count > 25:
+                if retry_count < 1:
+                    print(f"Evidence too long: {word_count} words (max 25). Retrying...")
+                    retry_prompt = f"{prompt}\n\nYou returned invalid JSON. Evidence must be ≤25 words. Return exactly the schema."
+                    return self._make_openai_request(retry_prompt, context, retry_count + 1)
+                else:
+                    # Truncate evidence to 25 words
+                    words = str(evidence).split()[:25]
+                    result["evidence"] = " ".join(words)
+
+        return result
+
+    def _extract_client_info(self, transcript: Transcript) -> ClientInfo:
+        """Extract client information using three-tier approach"""
+        # Tier 1: Extract from filename
+        filename_client = self._extract_client_from_filename(transcript.meeting_id)
+        if filename_client:
+            return ClientInfo(
+                client=filename_client,
+                source="filename"
+            )
+
+        # Tier 2: Use LLM extraction
+        llm_client = self._extract_client_with_llm(transcript)
+        if llm_client.client:
+            return llm_client
+
+        # Tier 3: Domain heuristics fallback
+        domain_client = self._extract_client_from_domain(transcript)
+        return domain_client
+
+    def _extract_client_from_filename(self, meeting_id: str) -> Optional[str]:
+        """Extract client name from meeting ID/filename"""
+        # Remove common prefixes and suffixes
+        clean_id = meeting_id.lower()
+        clean_id = re.sub(r'^(auto-|meeting-|call-|transcript-)', '', clean_id)
+        clean_id = re.sub(r'-(\d{10,}|transcript|call|meeting).*$', '', clean_id)
+
+        # Split on hyphens and take meaningful parts
+        parts = clean_id.split('-')
+        if len(parts) >= 2:
+            # Take first 1-2 parts as potential company name
+            company_parts = parts[:2] if len(parts[1]) > 2 else parts[:1]
+            return ' '.join(company_parts).title()
+
+        return None
+
+    def _extract_client_with_llm(self, transcript: Transcript) -> ClientInfo:
+        """Extract client information using LLM"""
+        context = self._format_transcript(transcript)
+
+        prompt = """
+        Extract client/company information from this meeting transcript:
+
+        What to identify:
+        1. Primary company/client name being discussed
+        2. Industry/domain (fintech, healthcare, e-commerce, etc.)
+        3. Company size category (startup, scaleup, enterprise)
+
+        Return JSON:
+        {
+            "client": "Company Name or null",
+            "domain": "industry vertical or null",
+            "size": "startup/scaleup/enterprise or null"
+        }
+        """
+
+        result = self._make_openai_request(prompt, context)
+
+        return ClientInfo(
+            client=result.get("client"),
+            domain=result.get("domain"),
+            size=result.get("size"),
+            source="llm"
+        )
+
+    def _extract_client_from_domain(self, transcript: Transcript) -> ClientInfo:
+        """Extract client using domain heuristics as fallback"""
+        # Use existing company field as fallback
+        client = transcript.company or "Unknown"
+
+        # Simple domain classification based on keywords
+        content = self._format_transcript(transcript).lower()
+
+        domain = None
+        if any(word in content for word in ['fintech', 'banking', 'payments', 'crypto']):
+            domain = 'fintech'
+        elif any(word in content for word in ['healthcare', 'medical', 'pharma', 'biotech']):
+            domain = 'healthcare'
+        elif any(word in content for word in ['ecommerce', 'retail', 'marketplace', 'shopping']):
+            domain = 'e-commerce'
+        elif any(word in content for word in ['saas', 'software', 'platform', 'api']):
+            domain = 'saas'
+
+        return ClientInfo(
+            client=client,
+            domain=domain,
+            source="domain"
+        )
     
     def _format_transcript(self, transcript: Transcript) -> str:
         """Format transcript for LLM analysis"""
@@ -164,9 +362,9 @@ class LLMScorer:
             # Check for specific model access errors
             if "does not exist" in str(e) or "access" in str(e).lower():
                 tier_required = self.model_config.get("tier_required", "Unknown")
-                return {"score": 0, "evidence": None, "reasoning": f"Model {self.model} requires {tier_required} access"}
-            
-            return {"score": 0, "evidence": None, "reasoning": f"API error: {str(e)}"}
+                return {"qualified": False, "reason": f"Model {self.model} requires {tier_required} access", "summary": "API access error", "evidence": None}
+
+            return {"qualified": False, "reason": f"API error: {str(e)}", "summary": "API request failed", "evidence": None}
     
     def _make_responses_api_request(self, prompt: str, context: str, retry_count: int = 0) -> Dict[str, Any]:
         """Make request using Responses API for GPT-5/o1 models"""
@@ -193,7 +391,7 @@ class LLMScorer:
         except Exception as e:
             print(f"Responses API error: {e}")
             print(f"Model: {self.model}")
-            return {"score": 0, "evidence": None, "reasoning": f"Responses API error: {str(e)}"}
+            return {"qualified": False, "reason": f"Responses API error: {str(e)}", "summary": "API request failed", "evidence": None}
         
         return self._process_response_content(content, retry_count, prompt, context)
     
@@ -224,7 +422,7 @@ class LLMScorer:
         except Exception as e:
             print(f"o1 Chat Completions API error: {e}")
             print(f"Model: {self.model}")
-            return {"score": 0, "evidence": None, "reasoning": f"o1 Chat API error: {str(e)}"}
+            return {"qualified": False, "reason": f"o1 Chat API error: {str(e)}", "summary": "API request failed", "evidence": None}
         
         return self._process_response_content(content, retry_count, prompt, context)
     
@@ -256,7 +454,7 @@ class LLMScorer:
         except Exception as e:
             print(f"Chat Completions API error: {e}")
             print(f"Model: {self.model}")
-            return {"score": 0, "evidence": None, "reasoning": f"Chat Completions API error: {str(e)}"}
+            return {"qualified": False, "reason": f"Chat Completions API error: {str(e)}", "summary": "API request failed", "evidence": None}
         
         return self._process_response_content(content, retry_count, prompt, context)
     
@@ -269,7 +467,7 @@ class LLMScorer:
                 return self._make_openai_request(prompt, context, retry_count + 1)
             else:
                 print(f"Empty response from {self.model} after 3 attempts")
-                return {"score": 0, "evidence": None, "reasoning": f"Empty response from {self.model}"}
+                return {"qualified": False, "reason": f"Empty response from {self.model}", "summary": "No response received", "evidence": None}
         
         content = content.strip()
         
@@ -291,9 +489,9 @@ class LLMScorer:
                 print(f"Retrying {self.model} due to JSON error... ({retry_count + 1}/2)")
                 return self._make_openai_request(prompt, context, retry_count + 1)
             
-            return {"score": 0, "evidence": None, "reasoning": "JSON parse error"}
+            return {"qualified": False, "reason": "JSON parse error", "summary": "Invalid response format", "evidence": None}
     
-    def _check_now(self, context: str) -> CheckResult:
+    def _check_now(self, context: str) -> SectionResult:
         """Check for current state and immediate hiring needs"""
         prompt = """
         Analyze this meeting transcript for the company's CURRENT STATE and IMMEDIATE hiring needs:
@@ -310,23 +508,26 @@ class LLMScorer:
         - "Team is overwhelmed, need help ASAP"
         - "Critical roles open, blocking client delivery"
 
-        Return JSON: 
+        Return JSON with exactly these fields:
         {
-            "score": 1 or 0,
-            "evidence": "specific quote from transcript or null",
-            "reasoning": "brief explanation"
+            "qualified": true or false,
+            "reason": "short explanation for decision",
+            "summary": "1-3 sentences; include numbers/timeframes only if stated; else 'Not stated.'",
+            "evidence": "verbatim quote ≤25 words or null"
         }
         """
-        
+
         result = self._make_openai_request(prompt, context)
-        
-        return CheckResult(
-            score=result.get("score", 0),
-            evidence_line=self._extract_evidence(result),
-            timestamp=None
+        validated_result = self._validate_section_response(result, prompt, context)
+
+        return SectionResult(
+            qualified=validated_result.get("qualified", False),
+            reason=validated_result.get("reason", "No reason provided"),
+            summary=validated_result.get("summary", "Not stated."),
+            evidence=validated_result.get("evidence")
         )
     
-    def _check_next(self, context: str) -> CheckResult:
+    def _check_next(self, context: str) -> SectionResult:
         """Check for future growth plans and vision"""
         prompt = """
         Analyze this meeting transcript for the company's FUTURE VISION and growth ambitions:
@@ -343,23 +544,26 @@ class LLMScorer:
         - "Goal is IPO in 24 months"
         - "Will need 20 more engineers once funding closes"
 
-        Return JSON:
+        Return JSON with exactly these fields:
         {
-            "score": 1 or 0,
-            "evidence": "specific quote from transcript or null",
-            "reasoning": "brief explanation"
+            "qualified": true or false,
+            "reason": "short explanation for decision",
+            "summary": "1-3 sentences; include numbers/timeframes only if stated; else 'Not stated.'",
+            "evidence": "verbatim quote ≤25 words or null"
         }
         """
-        
+
         result = self._make_openai_request(prompt, context)
-        
-        return CheckResult(
-            score=result.get("score", 0),
-            evidence_line=self._extract_evidence(result),
-            timestamp=None
+        validated_result = self._validate_section_response(result, prompt, context)
+
+        return SectionResult(
+            qualified=validated_result.get("qualified", False),
+            reason=validated_result.get("reason", "No reason provided"),
+            summary=validated_result.get("summary", "Not stated."),
+            evidence=validated_result.get("evidence")
         )
     
-    def _check_measure(self, context: str) -> CheckResult:
+    def _check_measure(self, context: str) -> SectionResult:
         """Check for success metrics and measurement approach"""
         prompt = """
         Analyze how this company measures SUCCESS using the Fun/Fame/Fortune framework:
@@ -377,24 +581,26 @@ class LLMScorer:
         - "Time-to-hire under 30 days"
         - "eNPS score of 70+"
 
-        Return JSON:
+        Return JSON with exactly these fields:
         {
-            "score": 1 or 0,
-            "evidence": "specific quote from transcript or null",
-            "reasoning": "brief explanation",
-            "category": "Fun, Fame, or Fortune"
+            "qualified": true or false,
+            "reason": "short explanation for decision",
+            "summary": "1-3 sentences; include numbers/timeframes only if stated; else 'Not stated.'",
+            "evidence": "verbatim quote ≤25 words or null"
         }
         """
-        
+
         result = self._make_openai_request(prompt, context)
-        
-        return CheckResult(
-            score=result.get("score", 0),
-            evidence_line=self._extract_evidence(result),
-            timestamp=None
+        validated_result = self._validate_section_response(result, prompt, context)
+
+        return SectionResult(
+            qualified=validated_result.get("qualified", False),
+            reason=validated_result.get("reason", "No reason provided"),
+            summary=validated_result.get("summary", "Not stated."),
+            evidence=validated_result.get("evidence")
         )
     
-    def _check_blocker(self, context: str) -> CheckResult:
+    def _check_blocker(self, context: str) -> SectionResult:
         """Check for blockers preventing growth"""
         prompt = """
         Identify the company's biggest BLOCKERS preventing them from achieving their goals:
@@ -413,21 +619,23 @@ class LLMScorer:
         - "Board pushing for profitability"
         - "Regulatory approval taking too long"
 
-        Return JSON:
+        Return JSON with exactly these fields:
         {
-            "score": 1 or 0,
-            "evidence": "specific quote from transcript or null",
-            "reasoning": "brief explanation",
-            "category": "Talent/Structure/Growth/Investor/External"
+            "qualified": true or false,
+            "reason": "short explanation for decision",
+            "summary": "1-3 sentences; include numbers/timeframes only if stated; else 'Not stated.'",
+            "evidence": "verbatim quote ≤25 words or null"
         }
         """
-        
+
         result = self._make_openai_request(prompt, context)
-        
-        return CheckResult(
-            score=result.get("score", 0),
-            evidence_line=self._extract_evidence(result),
-            timestamp=None
+        validated_result = self._validate_section_response(result, prompt, context)
+
+        return SectionResult(
+            qualified=validated_result.get("qualified", False),
+            reason=validated_result.get("reason", "No reason provided"),
+            summary=validated_result.get("summary", "Not stated."),
+            evidence=validated_result.get("evidence")
         )
     
     def _check_fit(self, context: str) -> FitResult:
@@ -454,44 +662,86 @@ class LLMScorer:
         - Business model transformation
         - M&A, partnerships, ventures
 
-        Return JSON:
+        Return JSON with exactly these fields:
         {
-            "score": 1 or 0,
-            "fit_labels": ["Talent", "Evolve", "Ventures"] (list of matching categories),
-            "evidence": "specific quote from transcript or null",
-            "reasoning": "brief explanation of matches"
+            "qualified": true or false,
+            "reason": "short explanation for decision",
+            "summary": "1-3 sentences; include numbers/timeframes only if stated; else 'Not stated.'",
+            "services": ["talent", "evolve", "ventures"],
+            "evidence": "verbatim quote ≤25 words or null"
         }
         """
-        
+
         result = self._make_openai_request(prompt, context)
-        
+        validated_result = self._validate_fit_response(result, prompt, context)
+
         return FitResult(
-            score=result.get("score", 0),
-            fit_labels=result.get("fit_labels", []),
-            evidence_line=self._extract_evidence(result),
-            timestamp=None
+            qualified=validated_result.get("qualified", False),
+            reason=validated_result.get("reason", "No reason provided"),
+            summary=validated_result.get("summary", "Not stated."),
+            services=validated_result.get("services", []),
+            evidence=validated_result.get("evidence")
         )
     
-    def score_transcript(self, transcript: Transcript) -> ScoreResult:
-        """Score a transcript using LLM analysis"""
+    def score_transcript_new(self, transcript: Transcript) -> NewScoreResult:
+        """Score a transcript using new JSON blob format"""
+        from datetime import datetime, timezone
+
         context = self._format_transcript(transcript)
-        
+
+        # Extract client information first
+        client_info = self._extract_client_info(transcript)
+
         # Run all scoring checks
         now_result = self._check_now(context)
         next_result = self._check_next(context)
         measure_result = self._check_measure(context)
         blocker_result = self._check_blocker(context)
         fit_result = self._check_fit(context)
-        
-        # Calculate total score
-        total_score = (
-            now_result.score +
-            next_result.score + 
-            measure_result.score +
-            blocker_result.score +
-            fit_result.score
+
+        # Calculate total qualified sections
+        total_qualified_sections = (
+            int(now_result.qualified) +
+            int(next_result.qualified) +
+            int(measure_result.qualified) +
+            int(blocker_result.qualified) +
+            int(fit_result.qualified)
         )
-        
+
+        return NewScoreResult(
+            meeting_id=transcript.meeting_id,
+            client_info=client_info,
+            date=transcript.date,
+            total_qualified_sections=total_qualified_sections,
+            now=now_result,
+            next=next_result,
+            measure=measure_result,
+            blocker=blocker_result,
+            fit=fit_result,
+            scored_at=datetime.now(timezone.utc),
+            llm_model=self.model
+        )
+
+    def score_transcript(self, transcript: Transcript) -> ScoreResult:
+        """Score a transcript using LLM analysis (legacy format)"""
+        context = self._format_transcript(transcript)
+
+        # Run all scoring checks
+        now_result = self._check_now(context)
+        next_result = self._check_next(context)
+        measure_result = self._check_measure(context)
+        blocker_result = self._check_blocker(context)
+        fit_result = self._check_fit(context)
+
+        # Calculate total score (legacy format compatibility)
+        total_score = (
+            int(now_result.qualified) +
+            int(next_result.qualified) +
+            int(measure_result.qualified) +
+            int(blocker_result.qualified) +
+            int(fit_result.qualified)
+        )
+
         return ScoreResult(
             meeting_id=transcript.meeting_id,
             company=transcript.company,
@@ -499,30 +749,25 @@ class LLMScorer:
             total_score=total_score,
             checks={
                 "now": {
-                    "score": now_result.score,
-                    "evidence_line": now_result.evidence_line,
-                    "timestamp": now_result.timestamp
+                    "score": int(now_result.qualified),
+                    "evidence_line": now_result.evidence
                 },
                 "next": {
-                    "score": next_result.score,
-                    "evidence_line": next_result.evidence_line,
-                    "timestamp": next_result.timestamp
+                    "score": int(next_result.qualified),
+                    "evidence_line": next_result.evidence
                 },
                 "measure": {
-                    "score": measure_result.score,
-                    "evidence_line": measure_result.evidence_line,
-                    "timestamp": measure_result.timestamp
+                    "score": int(measure_result.qualified),
+                    "evidence_line": measure_result.evidence
                 },
                 "blocker": {
-                    "score": blocker_result.score,
-                    "evidence_line": blocker_result.evidence_line,
-                    "timestamp": blocker_result.timestamp
+                    "score": int(blocker_result.qualified),
+                    "evidence_line": blocker_result.evidence
                 },
                 "fit": {
-                    "score": fit_result.score,
-                    "fit_labels": fit_result.fit_labels,
-                    "evidence_line": fit_result.evidence_line,
-                    "timestamp": fit_result.timestamp
+                    "score": int(fit_result.qualified),
+                    "fit_labels": fit_result.services,
+                    "evidence_line": fit_result.evidence
                 }
             }
         )
