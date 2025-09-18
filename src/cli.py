@@ -164,7 +164,7 @@ def score(
     # Display summary table
     qualified_count = sum(1 for r in results if r.qualified)
     qualified_pct = (qualified_count / len(results)) * 100 if results else 0
-    avg_score = sum(r.total_score for r in results) / len(results) if results else 0
+    avg_score = sum(r.total_qualified_sections for r in results) / len(results) if results else 0
     
     table = Table(title=f"UNKNOWN Brain Scoring Results ({llm_model})")
     table.add_column("Metric", style="cyan")
@@ -178,9 +178,9 @@ def score(
     
     if verbose:
         console.print(f"\n[bold]Top Scoring Meetings:[/bold]")
-        sorted_results = sorted(results, key=lambda x: x.total_score, reverse=True)
+        sorted_results = sorted(results, key=lambda x: x.total_qualified_sections, reverse=True)
         for i, result in enumerate(sorted_results[:5], 1):
-            console.print(f"{i}. {result.meeting_id} ({result.company or 'Unknown'}) - {result.total_score}/5")
+            console.print(f"{i}. {result.meeting_id} ({result.company or 'Unknown'}) - {result.total_qualified_sections}/5")
     
     console.print(f"\n[bold green]Scoring completed![/bold green]")
     console.print(f"JSON output: {json_output}")
@@ -370,7 +370,7 @@ def compare_models(
                     comparison_results[meeting_id]["results"][model] = result
                     
                     if verbose:
-                        console.print(f"  {model}: {result.total_score}/5 ({'✓' if result.qualified else '✗'})")
+                        console.print(f"  {model}: {result.total_qualified_sections}/5 ({'✓' if result.qualified else '✗'})")
                         
                 except Exception as e:
                     console.print(f"[yellow]Warning: {model} failed on {meeting_id}: {e}[/yellow]")
@@ -403,7 +403,7 @@ def compare_models(
                 successes += 1
         
         if results:
-            avg_score = sum(r.total_score for r in results) / len(results)
+            avg_score = sum(r.total_qualified_sections for r in results) / len(results)
             qualified_count = sum(1 for r in results if r.qualified)
             qualified_pct = (qualified_count / len(results)) * 100
         else:
@@ -447,7 +447,7 @@ def compare_models(
                 if result:
                     detail_table.add_row(
                         model,
-                        f"{result.total_score}/5",
+                        f"{result.total_qualified_sections}/5",
                         str(getattr(result, 'now_score', '?')),
                         str(getattr(result, 'next_score', '?')),
                         str(getattr(result, 'measure_score', '?')),

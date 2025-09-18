@@ -25,7 +25,7 @@ class OutputGenerator:
             writer = csv.writer(f)
             
             writer.writerow([
-                'meeting_id', 'company', 'date', 'total_score', 'qualified',
+                'meeting_id', 'company', 'date', 'total_qualified_sections', 'qualified',
                 'now_score', 'now_evidence', 'now_timestamp',
                 'next_score', 'next_evidence', 'next_timestamp', 
                 'measure_score', 'measure_evidence', 'measure_timestamp',
@@ -38,7 +38,7 @@ class OutputGenerator:
                     result.meeting_id,
                     result.company or '',
                     result.date.isoformat(),
-                    result.total_score,
+                    result.total_qualified_sections,
                     result.qualified,
                     result.checks['now']['score'],
                     result.checks['now']['evidence_line'] or '',
@@ -90,7 +90,7 @@ class OutputGenerator:
         
         for i, result in enumerate(results, 1):
             fit_labels = ', '.join(result.checks['fit'].get('fit_labels', []))
-            markdown_content += f"| {i} | {result.meeting_id} | {result.company or 'N/A'} | {result.date} | **{result.total_score}/5** | {result.checks['now']['score']} | {result.checks['next']['score']} | {result.checks['measure']['score']} | {result.checks['blocker']['score']} | {result.checks['fit']['score']} | {fit_labels or 'None'} |\n"
+            markdown_content += f"| {i} | {result.meeting_id} | {result.company or 'N/A'} | {result.date} | **{result.total_qualified_sections}/5** | {result.checks['now']['score']} | {result.checks['next']['score']} | {result.checks['measure']['score']} | {result.checks['blocker']['score']} | {result.checks['fit']['score']} | {fit_labels or 'None'} |\n"
         
         markdown_content += f"""
 
@@ -100,7 +100,7 @@ class OutputGenerator:
         
         qualified_results = [r for r in results if r.qualified]
         for result in qualified_results:
-            markdown_content += f"""### {result.meeting_id} - {result.company or 'Unknown Company'} ({result.total_score}/5)
+            markdown_content += f"""### {result.meeting_id} - {result.company or 'Unknown Company'} ({result.total_qualified_sections}/5)
 
 **Date**: {result.date}
 
@@ -154,7 +154,7 @@ class OutputGenerator:
                 full_transcript=transcript.full_transcript,
                 
                 # Scoring results
-                total_score=result.total_score,
+                total_qualified_sections=result.total_qualified_sections,
                 qualified=result.qualified,
                 
                 # Individual check results

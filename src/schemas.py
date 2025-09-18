@@ -106,7 +106,7 @@ class LeaderboardEntry(BaseModel):
     meeting_id: str
     company: Optional[str]
     date: Date
-    total_score: int
+    total_qualified_sections: int
     qualified: bool
     fit_labels: List[str]
 

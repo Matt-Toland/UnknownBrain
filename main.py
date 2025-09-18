@@ -258,7 +258,7 @@ async def score_transcript(
         return {
             "meeting_id": meeting_id,
             "model": scoring_model,
-            "total_score": 5,
+            "total_qualified_sections": 5,
             "qualified": True,
             "message": "Scoring completed"
         }

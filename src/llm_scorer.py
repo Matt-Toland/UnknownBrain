@@ -746,28 +746,33 @@ class LLMScorer:
             meeting_id=transcript.meeting_id,
             company=transcript.company,
             date=transcript.date,
-            total_score=total_score,
+            total_qualified_sections=total_score,
             checks={
                 "now": {
                     "score": int(now_result.qualified),
-                    "evidence_line": now_result.evidence
+                    "evidence_line": now_result.evidence,
+                    "timestamp": None
                 },
                 "next": {
                     "score": int(next_result.qualified),
-                    "evidence_line": next_result.evidence
+                    "evidence_line": next_result.evidence,
+                    "timestamp": None
                 },
                 "measure": {
                     "score": int(measure_result.qualified),
-                    "evidence_line": measure_result.evidence
+                    "evidence_line": measure_result.evidence,
+                    "timestamp": None
                 },
                 "blocker": {
                     "score": int(blocker_result.qualified),
-                    "evidence_line": blocker_result.evidence
+                    "evidence_line": blocker_result.evidence,
+                    "timestamp": None
                 },
                 "fit": {
                     "score": int(fit_result.qualified),
                     "fit_labels": fit_result.services,
-                    "evidence_line": fit_result.evidence
+                    "evidence_line": fit_result.evidence,
+                    "timestamp": None
                 }
             }
         )
