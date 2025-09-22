@@ -65,42 +65,143 @@ class GranolaDriveImporter:
     def _extract_json_metadata(self, content: str) -> dict:
         """Extract JSON metadata from the file header"""
         lines = content.split('\n')
-        
-        # Look for JSON block starting with ```json
+
+        # First try JSON block format starting with ```json
         json_start = None
         json_end = None
-        
+
         for i, line in enumerate(lines):
             if line.strip() == '```json':
                 json_start = i + 1
             elif line.strip() == '```' and json_start is not None:
                 json_end = i
                 break
-        
+
         if json_start is not None and json_end is not None:
             json_text = '\n'.join(lines[json_start:json_end])
-            
+
             # Fix common JSON formatting issues
             json_text = self._fix_malformed_json(json_text)
-            
+
             try:
                 return json.loads(json_text)
             except json.JSONDecodeError as e:
                 print(f"Warning: Failed to parse JSON metadata: {e}")
                 return {}
-        
-        return {}
+
+        # If no JSON block found, try parsing markdown-style metadata
+        return self._extract_markdown_metadata(content)
     
     def _fix_malformed_json(self, json_text: str) -> str:
         """Fix common JSON formatting issues from Zapier/Granola"""
+        # Fix malformed attendees field like: "attendees": email: mtoland96@gmail.com\nname: Mtoland96,
+        # Convert to: "attendees": "email: mtoland96@gmail.com name: Mtoland96",
+        json_text = re.sub(
+            r'"attendees":\s*([^"{\[,\n]+(?:\n[^"{\[,\n]+)*),?',
+            r'"attendees": "\1",',
+            json_text,
+            flags=re.MULTILINE | re.DOTALL
+        )
+
         # Fix empty attendees field: "attendees": , -> "attendees": ""
         json_text = re.sub(r'"attendees":\s*,', '"attendees": "",', json_text)
-        
+
         # Fix other empty fields with trailing commas
         json_text = re.sub(r':\s*,', ': "",', json_text)
-        
+
+        # Clean up any resulting double commas or extra whitespace
+        json_text = re.sub(r',\s*,', ',', json_text)
+        json_text = re.sub(r'\n\s*', ' ', json_text)  # Replace newlines within values with spaces
+
         return json_text
-    
+
+    def _extract_markdown_metadata(self, content: str) -> dict:
+        """Extract metadata from markdown-style format used by Granola"""
+        metadata = {}
+        lines = content.split('\n')
+
+        # Process the first section before "## Enhanced Notes"
+        for line in lines:
+            line = line.strip()
+
+            # Stop at the first section header
+            if line.startswith('## '):
+                break
+
+            # Extract Creator
+            if line.startswith('**Creator:**'):
+                creator_text = line.replace('**Creator:**', '').strip()
+                # Extract name and email from "Sean (sean@weareunknown.io)" format
+                creator_match = re.match(r'([^(]+)\s*\(([^)]+)\)', creator_text)
+                if creator_match:
+                    metadata['creator_name'] = creator_match.group(1).strip()
+                    metadata['creator_email'] = creator_match.group(2).strip()
+                else:
+                    metadata['creator_name'] = creator_text
+
+            # Extract Date
+            elif line.startswith('**Date:**'):
+                date_text = line.replace('**Date:**', '').strip()
+                metadata['calendar_event_time'] = date_text
+
+            # Extract Meeting Link (Granola link and note ID)
+            elif line.startswith('**Meeting Link:**'):
+                link_text = line.replace('**Meeting Link:**', '').strip()
+                metadata['granola_link'] = link_text
+                # Extract granola note ID from URL
+                note_id_match = re.search(r'/d/([a-f0-9-]+)', link_text)
+                if note_id_match:
+                    metadata['granola_note_id'] = note_id_match.group(1)
+
+            # Extract Attendees - process multiple lines
+            elif line.startswith('**Attendees:**'):
+                attendees_text = line.replace('**Attendees:**', '').strip()
+                attendees = []
+
+                # Start with content from the **Attendees:** line if present
+                current_attendee = {}
+                attendee_lines = [attendees_text] if attendees_text else []
+
+                # Collect all lines until the next section
+                current_line_index = lines.index(line)
+                for i in range(current_line_index + 1, len(lines)):
+                    next_line = lines[i].strip()
+
+                    # Stop at empty lines or next section
+                    if not next_line or next_line.startswith('**') or next_line.startswith('##'):
+                        break
+
+                    attendee_lines.append(next_line)
+
+                # Parse all attendee lines
+                for attendee_line in attendee_lines:
+                    if attendee_line.startswith('email:'):
+                        # Save any previous attendee before starting a new one
+                        if 'name' in current_attendee and 'email' in current_attendee:
+                            attendees.append(current_attendee['name'])
+
+                        current_attendee = {}
+                        current_attendee['email'] = attendee_line.replace('email:', '').strip()
+                    elif attendee_line.startswith('name:'):
+                        current_attendee['name'] = attendee_line.replace('name:', '').strip()
+                        # If we have both email and name, add this attendee
+                        if 'email' in current_attendee:
+                            attendees.append(current_attendee['name'])
+                            current_attendee = {}
+
+                # Don't forget the last attendee if it wasn't added
+                if 'name' in current_attendee and 'email' in current_attendee:
+                    attendees.append(current_attendee['name'])
+
+                metadata['attendees'] = ', '.join(attendees) if attendees else ''
+
+        # Extract title from the first line if it looks like a title
+        title_line = lines[0].strip() if lines else ''
+        if title_line.startswith('# '):
+            metadata['title'] = title_line.replace('# ', '').strip()
+
+        return metadata
+
     def _parse_filename(self, filename: str) -> Tuple[str, str, str]:
         """Parse filename pattern: [Creator] Title - Extra - Timestamp.txt"""
         match = self.filename_pattern.match(filename)
