@@ -162,34 +162,33 @@ class GranolaDriveImporter:
                 current_attendee = {}
                 attendee_lines = [attendees_text] if attendees_text else []
 
-                # Collect all lines until the next section
+                # Collect all lines until the next section (skip empty lines)
                 current_line_index = lines.index(line)
                 for i in range(current_line_index + 1, len(lines)):
                     next_line = lines[i].strip()
 
-                    # Stop at empty lines or next section
-                    if not next_line or next_line.startswith('**') or next_line.startswith('##'):
+                    # Stop at next section headers, but continue through empty lines
+                    if next_line.startswith('**') or next_line.startswith('##'):
                         break
 
-                    attendee_lines.append(next_line)
+                    # Add non-empty lines (including email/name lines)
+                    if next_line:
+                        attendee_lines.append(next_line)
 
-                # Parse all attendee lines
+                # Parse all attendee lines - simpler approach
+                current_attendee = {}
                 for attendee_line in attendee_lines:
                     if attendee_line.startswith('email:'):
-                        # Save any previous attendee before starting a new one
+                        # Save previous attendee if complete
                         if 'name' in current_attendee and 'email' in current_attendee:
                             attendees.append(current_attendee['name'])
 
-                        current_attendee = {}
-                        current_attendee['email'] = attendee_line.replace('email:', '').strip()
+                        # Start new attendee
+                        current_attendee = {'email': attendee_line.replace('email:', '').strip()}
                     elif attendee_line.startswith('name:'):
                         current_attendee['name'] = attendee_line.replace('name:', '').strip()
-                        # If we have both email and name, add this attendee
-                        if 'email' in current_attendee:
-                            attendees.append(current_attendee['name'])
-                            current_attendee = {}
 
-                # Don't forget the last attendee if it wasn't added
+                # Add the final attendee if complete
                 if 'name' in current_attendee and 'email' in current_attendee:
                     attendees.append(current_attendee['name'])
 
