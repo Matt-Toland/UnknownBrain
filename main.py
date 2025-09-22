@@ -565,8 +565,8 @@ async def process_pipeline(
             'calendar_event_id': getattr(transcript, 'calendar_event_id', None),
             'calendar_event_title': getattr(transcript, 'calendar_event_title', None),
             'file_created_timestamp': safe_int_convert(getattr(transcript, 'file_created_timestamp', None)),
-            # Scoring fields
-            'total_qualified_sections': score_result.total_qualified_sections,
+            # Scoring fields (legacy format for backward compatibility)
+            'total_score': score_result.total_qualified_sections,
             'qualified': score_result.qualified,
             'scored_at': datetime.now(timezone.utc).isoformat(timespec='seconds'),
             'llm_model': scoring_model,
