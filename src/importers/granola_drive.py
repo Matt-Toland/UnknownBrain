@@ -33,7 +33,7 @@ class GranolaDriveImporter:
         meeting_id = metadata.get('granola_note_id', file_path.stem)
         company = self._extract_company_name(title, enhanced_notes)
         date_obj = self._parse_timestamp(metadata.get('calendar_event_time') or date_str)
-        participants = self._extract_participants(metadata.get('attendees', ''), content)
+        participants = self._extract_participants(metadata.get('attendees', ''), content, metadata.get('creator_name'))
         
         return Transcript(
             meeting_id=meeting_id,
@@ -153,6 +153,30 @@ class GranolaDriveImporter:
                 if note_id_match:
                     metadata['granola_note_id'] = note_id_match.group(1)
 
+            # Extract Calendar Event Title (from Zapier)
+            elif line.startswith('**Calendar Event Title:**'):
+                calendar_title = line.replace('**Calendar Event Title:**', '').strip()
+                if calendar_title:  # Only set if not empty
+                    metadata['calendar_event_title'] = calendar_title
+
+            # Extract Calendar Event ID (from Zapier)
+            elif line.startswith('**Calendar Event ID:**'):
+                event_id = line.replace('**Calendar Event ID:**', '').strip()
+                if event_id:  # Only set if not empty
+                    metadata['calendar_event_id'] = event_id
+
+            # Extract File Created Timestamp (from Zapier)
+            elif line.startswith('**File Created Timestamp:**'):
+                timestamp = line.replace('**File Created Timestamp:**', '').strip()
+                if timestamp:  # Only set if not empty
+                    metadata['file_created_timestamp'] = timestamp
+
+            # Extract Zapier Step ID (from Zapier)
+            elif line.startswith('**Zapier Step ID:**'):
+                step_id = line.replace('**Zapier Step ID:**', '').strip()
+                if step_id:  # Only set if not empty
+                    metadata['zapier_step_id'] = step_id
+
             # Extract Attendees - process multiple lines
             elif line.startswith('**Attendees:**'):
                 attendees_text = line.replace('**Attendees:**', '').strip()
@@ -197,7 +221,11 @@ class GranolaDriveImporter:
         # Extract title from the first line if it looks like a title
         title_line = lines[0].strip() if lines else ''
         if title_line.startswith('# '):
-            metadata['title'] = title_line.replace('# ', '').strip()
+            title_text = title_line.replace('# ', '').strip()
+            # Only set title if it's not empty
+            if title_text:
+                metadata['title'] = title_text
+                # Note: calendar_event_title is now a separate field from Zapier
 
         return metadata
 
@@ -286,14 +314,14 @@ class GranolaDriveImporter:
         
         return None
     
-    def _extract_participants(self, attendees_str: str, content: str) -> List[str]:
-        """Extract participants from attendees field or content"""
+    def _extract_participants(self, attendees_str: str, content: str, creator_name: Optional[str] = None) -> List[str]:
+        """Extract participants from attendees field or content, including creator"""
         participants = []
-        
+
         # First try attendees from JSON metadata
         if attendees_str and attendees_str.strip():
             participants = [p.strip() for p in attendees_str.split(',') if p.strip()]
-        
+
         # If no attendees in metadata, look in content
         if not participants:
             lines = content.split('\n')
@@ -302,7 +330,13 @@ class GranolaDriveImporter:
                     participants_str = re.sub(r'(attendees:|participants:)', '', line, flags=re.IGNORECASE).strip()
                     participants = [p.strip() for p in re.split(r'[,;]', participants_str) if p.strip()]
                     break
-        
+
+        # Always include creator as a participant if available and not already included
+        if creator_name and creator_name.strip():
+            creator_name = creator_name.strip()
+            if creator_name not in participants:
+                participants.insert(0, creator_name)  # Put creator first
+
         return participants
     
     def _build_notes(self, enhanced_notes: str, my_notes: str, full_transcript: str) -> List[Note]:

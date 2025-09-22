@@ -1,8 +1,0 @@
-# API dependencies for Cloud Run deployment
-fastapi==0.104.1
-uvicorn==0.24.0
-pydantic==2.4.2
-
-# Add to existing requirements.txt
-# Cloud Storage integration (will be added in next step)
-google-cloud-storage==2.10.0

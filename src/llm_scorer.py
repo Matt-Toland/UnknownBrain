@@ -241,18 +241,18 @@ class LLMScorer:
 
     def _extract_client_info(self, transcript: Transcript) -> ClientInfo:
         """Extract client information using three-tier approach"""
-        # Tier 1: Extract from filename
+        # Tier 1: Use LLM extraction (most accurate)
+        llm_client = self._extract_client_with_llm(transcript)
+        if llm_client.client and llm_client.client.strip():
+            return llm_client
+
+        # Tier 2: Extract from filename (fallback)
         filename_client = self._extract_client_from_filename(transcript.meeting_id)
-        if filename_client:
+        if filename_client and len(filename_client) > 3 and not filename_client.lower().startswith(('auto', 'meeting', 'call')):
             return ClientInfo(
                 client=filename_client,
                 source="filename"
             )
-
-        # Tier 2: Use LLM extraction
-        llm_client = self._extract_client_with_llm(transcript)
-        if llm_client.client:
-            return llm_client
 
         # Tier 3: Domain heuristics fallback
         domain_client = self._extract_client_from_domain(transcript)
