@@ -531,83 +531,23 @@ async def process_pipeline(
         
         transcript = importer.parse_file(temp_file_path)
         
-        # 4. Score with LLM
+        # 4. Score with LLM using new format
         print(f"Scoring with {scoring_model}")
         scorer = LLMScorer(model=scoring_model)
-        score_result = scorer.score_transcript(transcript)
-        
+        new_score_result = scorer.score_transcript_new(transcript)
+
         # 5. Cache the results
         print("Caching results")
-        gcs.cache_score(meeting_id, scoring_model, score_result.__dict__)
-        
-        # 6. Upload to BigQuery
-        print("Uploading to BigQuery")
-        # Create temporary JSONL file for BigQuery - explicit mapping to avoid duplicate columns
-        bq_data = {
-            # Core transcript fields
-            'meeting_id': score_result.meeting_id,
-            'date': transcript.date.isoformat() if transcript.date else None,  # BigQuery DATE expects YYYY-MM-DD format
-            'company': getattr(transcript, 'company', None),
-            'participants': getattr(transcript, 'participants', []),
-            'desk': getattr(transcript, 'desk', 'Unknown'),
-            'source': getattr(transcript, 'source', None),
-            # Granola specific fields
-            'granola_note_id': getattr(transcript, 'granola_note_id', None),
-            'title': getattr(transcript, 'title', None),
-            'creator_name': getattr(transcript, 'creator_name', None),
-            'creator_email': getattr(transcript, 'creator_email', None),
-            'enhanced_notes': getattr(transcript, 'enhanced_notes', None),
-            'my_notes': getattr(transcript, 'my_notes', None),
-            'full_transcript': getattr(transcript, 'full_transcript', None),
-            'zapier_step_id': safe_int_convert(getattr(transcript, 'zapier_step_id', None)),
-            'granola_link': getattr(transcript, 'granola_link', None),
-            'calendar_event_time': convert_to_utc_timestamp(getattr(transcript, 'calendar_event_time', None)),
-            'calendar_event_id': getattr(transcript, 'calendar_event_id', None),
-            'calendar_event_title': getattr(transcript, 'calendar_event_title', None),
-            'file_created_timestamp': safe_int_convert(getattr(transcript, 'file_created_timestamp', None)),
-            # Scoring fields (legacy format for backward compatibility)
-            'total_score': score_result.total_qualified_sections,
-            'qualified': score_result.qualified,
-            'scored_at': datetime.now(timezone.utc).isoformat(timespec='seconds'),
-            'llm_model': scoring_model,
-            # Flattened check results
-            'now_score': score_result.checks['now']['score'],
-            'now_evidence': score_result.checks['now']['evidence_line'],
-            'now_timestamp': score_result.checks['now']['timestamp'],
-            'next_score': score_result.checks['next']['score'],
-            'next_evidence': score_result.checks['next']['evidence_line'],
-            'next_timestamp': score_result.checks['next']['timestamp'],
-            'measure_score': score_result.checks['measure']['score'],
-            'measure_evidence': score_result.checks['measure']['evidence_line'],
-            'measure_timestamp': score_result.checks['measure']['timestamp'],
-            'blocker_score': score_result.checks['blocker']['score'],
-            'blocker_evidence': score_result.checks['blocker']['evidence_line'],
-            'blocker_timestamp': score_result.checks['blocker']['timestamp'],
-            'fit_score': score_result.checks['fit']['score'],
-            'fit_labels': score_result.checks['fit']['fit_labels'],
-            'fit_evidence': score_result.checks['fit']['evidence_line'],
-            'fit_timestamp': score_result.checks['fit']['timestamp']
-        }
-        
-        # Upload to BigQuery via existing loader
-        loader = BigQueryLoader()
-        temp_jsonl_path = Path(f"/tmp/{meeting_id}.jsonl")
-        temp_files.append(temp_jsonl_path)
-        
-        with open(temp_jsonl_path, 'w') as f:
-            # All fields should be properly typed now, no need for default=str
-            f.write(json.dumps(bq_data) + "\n")
-        
-        # Use WRITE_APPEND (MERGE has query issues - needs investigation)
-        loader.load_jsonl_data(temp_jsonl_path, write_disposition="WRITE_APPEND")
+        gcs.cache_score(meeting_id, scoring_model, new_score_result.__dict__)
 
-        # Also upload to new meeting_intel table format
-        await upload_new_format_to_bigquery(transcript, score_result, scoring_model, meeting_id, temp_files)
+        # 6. Upload to meeting_intel BigQuery table
+        print("Uploading to BigQuery")
+        await upload_new_format_to_bigquery(transcript, new_score_result, scoring_model, meeting_id, temp_files)
         
         # Update status with completion
         processing_status[meeting_id].status = "completed"
         processing_status[meeting_id].completed_at = datetime.now().isoformat()
-        processing_status[meeting_id].score = score_result.total_qualified_sections
+        processing_status[meeting_id].score = new_score_result.total_qualified_sections
         
         print(f"Successfully processed {meeting_id}")
         
@@ -624,19 +564,14 @@ async def process_pipeline(
 
 async def upload_new_format_to_bigquery(
     transcript,
-    score_result,
+    new_score_result,
     model: str,
     meeting_id: str,
     temp_files: List[Path]
 ):
     """Upload using new meeting_intel table format with JSON blobs"""
     try:
-        # Convert legacy score result to new format using NewScoreResult
-        from src.llm_scorer import LLMScorer
-        scorer = LLMScorer(model)
-
-        # Re-score using new format (in production, cache this to avoid double API calls)
-        new_score_result = scorer.score_transcript_new(transcript)
+        # Use the provided score result directly (no re-scoring needed)
 
         # Create new BigQuery data mapping
         new_bq_data = {
