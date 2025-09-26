@@ -1,0 +1,62 @@
+# Cloud Build configuration for UNKNOWN Brain
+# Builds and deploys to Cloud Run automatically
+
+steps:
+  # Build the Docker image
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - 'build'
+      - '-t'
+      - 'us-central1-docker.pkg.dev/$PROJECT_ID/unknown-brain/unknown-brain:$BUILD_ID'
+      - '-t'
+      - 'us-central1-docker.pkg.dev/$PROJECT_ID/unknown-brain/unknown-brain:latest'
+      - '.'
+
+  # Push the image to Artifact Registry
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - 'push'
+      - 'us-central1-docker.pkg.dev/$PROJECT_ID/unknown-brain/unknown-brain:$BUILD_ID'
+
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - 'push'
+      - 'us-central1-docker.pkg.dev/$PROJECT_ID/unknown-brain/unknown-brain:latest'
+
+  # Deploy to Cloud Run
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    entrypoint: gcloud
+    args:
+      - 'run'
+      - 'deploy'
+      - '$_SERVICE_NAME'
+      - '--image=us-central1-docker.pkg.dev/$PROJECT_ID/unknown-brain/unknown-brain:$BUILD_ID'
+      - '--region=$_REGION'
+      - '--platform=managed'
+      - '--allow-unauthenticated'  # Remove this for production security
+      - '--timeout=3600'  # 60 minutes for LLM processing
+      - '--memory=2Gi'
+      - '--cpu=2'
+      - '--max-instances=10'
+      - '--min-instances=0'  # Scale to zero when not in use
+      - '--concurrency=10'
+      - '--port=8080'
+      - '--set-env-vars=ENVIRONMENT=production'
+      # Note: OPENAI_API_KEY should be set separately via gcloud or Cloud Console
+
+# Store images in Artifact Registry
+options:
+  logging: CLOUD_LOGGING_ONLY
+
+# Build timeout (default is 10 minutes, extend if needed)
+timeout: '1200s'
+
+# Tags for tracking builds
+tags:
+  - 'unknown-brain'
+  - 'transcript-scoring'
+
+# Substitutions (can be overridden at build time)
+substitutions:
+  _REGION: 'us-central1'
+  _SERVICE_NAME: 'unknown-brain'
