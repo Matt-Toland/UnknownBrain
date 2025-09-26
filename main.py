@@ -507,42 +507,46 @@ async def process_pipeline(
         
         # Use default model if not specified
         scoring_model = model or os.getenv("DEFAULT_LLM_MODEL", "gpt-5-mini")
-        
-        # 1. Check cache first
-        cached_result = gcs.get_cached_score(meeting_id, scoring_model)
-        if cached_result:
-            print(f"Using cached result for {meeting_id}")
-            processing_status[meeting_id].status = "completed"
-            processing_status[meeting_id].completed_at = datetime.now().isoformat()
-            processing_status[meeting_id].score = cached_result['results']['total_qualified_sections']
-            return
-        
-        # 2. Download file from GCS
+
+        # 1. Download file from GCS
         print(f"Downloading {file_path} from bucket {bucket}")
         temp_file_path = gcs.download_to_temp_file(file_path)
         temp_files.append(temp_file_path)
-        
-        # 3. Ingest (convert to JSON)
+
+        # 2. Ingest (convert to JSON)
         print(f"Ingesting transcript from {temp_file_path}")
         if file_path.endswith('.txt'):
             importer = GranolaDriveImporter()
         else:
             importer = PlaintextImporter()
-        
+
         transcript = importer.parse_file(temp_file_path)
-        
+
+        # Extract the real meeting_id from the transcript (for Granola files)
+        real_meeting_id = getattr(transcript, 'granola_note_id', None) or getattr(transcript, 'meeting_id', meeting_id)
+        print(f"Using real meeting_id: {real_meeting_id} (was: {meeting_id})")
+
+        # 3. Check cache with real meeting_id
+        cached_result = gcs.get_cached_score(real_meeting_id, scoring_model)
+        if cached_result:
+            print(f"Using cached result for real meeting_id {real_meeting_id}")
+            processing_status[meeting_id].status = "completed"
+            processing_status[meeting_id].completed_at = datetime.now().isoformat()
+            processing_status[meeting_id].score = cached_result['results']['total_qualified_sections']
+            return
+
         # 4. Score with LLM using new format
         print(f"Scoring with {scoring_model}")
         scorer = LLMScorer(model=scoring_model)
         new_score_result = scorer.score_transcript_new(transcript)
 
-        # 5. Cache the results
+        # 5. Cache the results using real meeting_id
         print("Caching results")
-        gcs.cache_score(meeting_id, scoring_model, new_score_result.__dict__)
+        gcs.cache_score(real_meeting_id, scoring_model, new_score_result.__dict__)
 
         # 6. Upload to meeting_intel BigQuery table
         print("Uploading to BigQuery")
-        await upload_new_format_to_bigquery(transcript, new_score_result, scoring_model, meeting_id, temp_files)
+        await upload_new_format_to_bigquery(transcript, new_score_result, scoring_model, real_meeting_id, temp_files)
         
         # Update status with completion
         processing_status[meeting_id].status = "completed"
