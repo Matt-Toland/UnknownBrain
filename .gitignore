@@ -44,6 +44,11 @@ logs/
 tmp/
 temp/
 *.tmp
+*.csv
+*.txt
+!CLAUDE.md
+!README.md
+!requirements.txt
 
 # Coverage reports
 htmlcov/
