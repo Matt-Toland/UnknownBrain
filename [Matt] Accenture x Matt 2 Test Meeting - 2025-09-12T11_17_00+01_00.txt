@@ -1,0 +1,76 @@
+```json
+{
+  "granola_note_id": "f2915868-5a4a-4938-9185-2f4c12ef96bf",
+  "title": "Accenture x Matt Test Meeting",
+  "creator_name": "Matt",
+  "creator_email": "matt@weareunknown.io",
+  "calendar_event_title": "Accenture x Matt Test Meeting",
+  "calendar_event_id": "16aeqc5cjc2cpl9atvmpln47pm",
+  "calendar_event_time": "2025-09-12T11:17:00+01:00",
+  "attendees": email: mtoland96@gmail.com
+name: Mtoland96,
+  "granola_link": "https://notes.granola.ai/d/f2915868-5a4a-4938-9185-2f4c12ef96bf",
+  "file_created_timestamp": "1757672351",
+  "zapier_step_id": "320129207",
+  "source": "granola_to_drive_sync"
+}
+```
+
+# Accenture x Matt Test Meeting
+
+## Meeting Details
+**Date:** 2025-09-12T11:17:00+01:00
+**Creator:** Matt (matt@weareunknown.io)
+**Calendar Event:** Accenture x Matt Test Meeting
+**Calendar Event ID:** 16aeqc5cjc2cpl9atvmpln47pm
+**Attendees:** email: mtoland96@gmail.com
+name: Mtoland96
+**Granola Note ID:** f2915868-5a4a-4938-9185-2f4c12ef96bf
+
+## Enhanced Notes
+### AI Industry Intelligence GPT
+
+- North star project leveraging hundreds of client/candidate conversations per quarter
+- Current state: conversations sitting unused in Google Drive notes
+- Proposed solution: Retrieval Augmented Generation setup
+  - Pull transcripts into vector store
+  - Query through GPT-4o via chat interface
+  - Example query: “What’s coming up most often in FinTech hiring conversations this month?”
+- MVP costs: Few £100/month (OpenAI + Pinecone)
+- Production scale: Low 4-figures monthly for thousands of conversations
+- Build effort: 10-12 days
+
+### Freelance Briefing Tool
+
+- Concept: Client drops voice note, automated processing from there
+- Key bottlenecks identified:
+  - WhatsApp Business verification
+    - Meta approval takes several days for templates
+  - ATS integration challenges
+    - Unknown OS API availability unclear
+    - May require email handoff to ATS
+- Pilot timeline: 6-8 weeks for lean MVP
+  - Webhook transcription and summary
+  - Handoff to ATS system
+
+### Commercial Structure
+
+- Fixed price build: £12k
+- Alternative: Hybrid approach
+  - Discovery phase first
+  - Then decide between retainer or fixed price once scope clarified
+
+---
+
+Chat with meeting transcript: [https://notes.granola.ai/d/f2915868-5a4a-4938-9185-2f4c12ef96bf?source=zapier](https://notes.granola.ai/d/f2915868-5a4a-4938-9185-2f4c12ef96bf?source=zapier)
+
+## My Notes
+
+
+## Full Transcript
+ 
+Me: Okay. Welcome, everybody. Thanks for jumping on, everyone. I just want to align on where we are with the three AI ideas the industry intelligence GPT. Could come in back as our north star. We've got hundreds of client and candidate conversations every quarter. Right now, they just sit in notes in Google Drive, but we want to end surface insights hiring trends, salary shifts, maybe even predictive suggestions for clients. Yeah. And I think the challenges can be short small, if we give you 50 transcripts, Matt, could you spin up something that actually gives us usable trans spelling? Yes. But I recommend starting with a simple retrieval augmented setup. Pull the transcripts into a vector store, run queries through GPT four o, and expose it via chat interface. That way, you can ask what's coming up most often in FinTech hiring conversations this month and get a sighted answer. Is the cost implication of that? We're talking MVP versus production. Well, for MVP, probably a few £100 a month on OpenAI and Pinecone. Production, once you scale into thousands of conversations per year, you're still looking into a low 4 figures monthly build effort. Is around ten to twelve days. That feels reasonable. Okay. Moving on. The freelance briefing too. I love the idea that a client can just drop a voice note and we take it from there. What's the bottleneck? Two main ones, First, what's up business verification? Meta takes a few days to approve templates. Second, ATS integration. We need to confirm whether unknown OS exposes an API or if you'll have to email in briefs. So realistically, if we wanted something pilot ready this quarter, what's the timeline? About sixty eight weeks for a Lean MVP webhook transcription summary and a handoff to a ATS. And, commercially, fixed price build around 12 k we do a hybrid or cheaper discovery and then decide on retainer or fix. Once scope is clear. Alright. Thanks, everyone. Comfort for coming. We're gonna conclude the meeting there today. Cheers. Bye. 
+
+---
+**Original Granola Link:** https://notes.granola.ai/d/f2915868-5a4a-4938-9185-2f4c12ef96bf
+**Synced via Zapier:** 1757672351

@@ -121,7 +121,7 @@ class GranolaDriveImporter:
         lines = content.split('\n')
 
         # Process the first section before "## Enhanced Notes"
-        for line in lines:
+        for line_index, line in enumerate(lines):
             line = line.strip()
 
             # Stop at the first section header
@@ -187,7 +187,7 @@ class GranolaDriveImporter:
                 attendee_lines = [attendees_text] if attendees_text else []
 
                 # Collect all lines until the next section (skip empty lines)
-                current_line_index = lines.index(line)
+                current_line_index = line_index
                 for i in range(current_line_index + 1, len(lines)):
                     next_line = lines[i].strip()
 

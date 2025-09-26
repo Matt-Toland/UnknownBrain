@@ -163,19 +163,6 @@ class LLMScorer:
                     "evidence": None
                 }
 
-        # Check evidence length if present
-        evidence = result.get("evidence")
-        if evidence is not None:
-            word_count = len(str(evidence).split())
-            if word_count > 25:
-                if retry_count < 1:
-                    print(f"Evidence too long: {word_count} words (max 25). Retrying...")
-                    retry_prompt = f"{prompt}\n\nYou returned invalid JSON. Evidence must be ≤25 words. Return exactly the schema."
-                    return self._make_openai_request(retry_prompt, context, retry_count + 1)
-                else:
-                    # Truncate evidence to 25 words
-                    words = str(evidence).split()[:25]
-                    result["evidence"] = " ".join(words)
 
         return result
 
@@ -223,19 +210,6 @@ class LLMScorer:
             else:
                 result["services"] = []
 
-        # Check evidence length if present
-        evidence = result.get("evidence")
-        if evidence is not None:
-            word_count = len(str(evidence).split())
-            if word_count > 25:
-                if retry_count < 1:
-                    print(f"Evidence too long: {word_count} words (max 25). Retrying...")
-                    retry_prompt = f"{prompt}\n\nYou returned invalid JSON. Evidence must be ≤25 words. Return exactly the schema."
-                    return self._make_openai_request(retry_prompt, context, retry_count + 1)
-                else:
-                    # Truncate evidence to 25 words
-                    words = str(evidence).split()[:25]
-                    result["evidence"] = " ".join(words)
 
         return result
 
@@ -513,7 +487,7 @@ class LLMScorer:
             "qualified": true or false,
             "reason": "short explanation for decision",
             "summary": "1-3 sentences; include numbers/timeframes only if stated; else 'Not stated.'",
-            "evidence": "verbatim quote ≤25 words or null"
+            "evidence": "verbatim quote or null"
         }
         """
 
@@ -549,7 +523,7 @@ class LLMScorer:
             "qualified": true or false,
             "reason": "short explanation for decision",
             "summary": "1-3 sentences; include numbers/timeframes only if stated; else 'Not stated.'",
-            "evidence": "verbatim quote ≤25 words or null"
+            "evidence": "verbatim quote or null"
         }
         """
 
@@ -586,7 +560,7 @@ class LLMScorer:
             "qualified": true or false,
             "reason": "short explanation for decision",
             "summary": "1-3 sentences; include numbers/timeframes only if stated; else 'Not stated.'",
-            "evidence": "verbatim quote ≤25 words or null"
+            "evidence": "verbatim quote or null"
         }
         """
 
@@ -624,7 +598,7 @@ class LLMScorer:
             "qualified": true or false,
             "reason": "short explanation for decision",
             "summary": "1-3 sentences; include numbers/timeframes only if stated; else 'Not stated.'",
-            "evidence": "verbatim quote ≤25 words or null"
+            "evidence": "verbatim quote or null"
         }
         """
 
@@ -668,7 +642,7 @@ class LLMScorer:
             "reason": "short explanation for decision",
             "summary": "1-3 sentences; include numbers/timeframes only if stated; else 'Not stated.'",
             "services": ["talent", "evolve", "ventures"],
-            "evidence": "verbatim quote ≤25 words or null"
+            "evidence": "verbatim quote or null"
         }
         """
 

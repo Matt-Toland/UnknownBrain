@@ -1,0 +1,229 @@
+# 
+
+**Creator:** Matt (matt@weareunknown.io)
+**Date:** 2025-09-18T13:07:07.566Z
+**Calendar Event ID:** 
+**Meeting Link:** https://notes.granola.ai/d/52e10a2b-220a-4838-97e6-ea32a09e7253
+**Attendees:** email: ollie@weareunknown.io
+name: Ollie Scott
+
+email: mtoland96@gmail.com
+name: Mtoland96
+**File Created Timestamp:** 1758548485
+**Zapier Step ID:** 52e10a2b-220a-4838-97e6-ea32a09e7253
+
+## Enhanced Notes
+### Project Phasing Strategy
+
+- Phase 1: Data ingestion and qualification scoring
+  - Feed brain with meeting transcripts
+  - Build qualification metrics and scoring system
+  - Create leaderboard for consultant performance
+- Phase 2: Recommendations and automation
+  - Product matching and suggestions
+  - Automated client updates and leadership reports
+  - Trend analysis and predictive insights
+- Avoiding scope creep in initial phase
+  - Product recommendations deferred to phase 2
+  - Focus on core brain setup first
+
+### Brain Training and Data Sources
+
+- Ollie designated as go-to for data perspective training
+- Current data collection challenges
+  - Only 2 of 5 expected transcripts received from managing partners
+  - Deadline today for submissions
+- Future data expansion planned
+  - Other call transcripts
+  - Podcast transcripts
+  - Industry news feeds
+- Quality over quantity approach initially
+  - 3-4 good client conversation examples preferred
+  - Avoid being inundated during setup phase
+
+### User Experience and Notifications
+
+- Consultant workflow design
+  - Conversation dropped into Granola
+  - Appears in brain automatically
+  - Notification sent (email or in-app)
+  - Shows contribution acknowledgment
+  - Displays scoring with evidence snippets
+- Performance tracking concept
+  - Monthly conversation count per consultant
+  - Average qualification scores
+  - Incentivized knowledge base contributions
+
+### Technical Infrastructure
+
+- React web app dashboard with two components
+  - Chat interface with citation responses
+  - Leaderboard functionality
+- Granola organization setup
+  - Shared folder created for direct uploads
+  - Ollie being added as collaborator
+  - Managing partners to be invited selectively
+- Integration improvements needed
+  - Direct uploads provide better metadata
+  - Individual submissions include calendar data
+
+### Company Structure Updates
+
+- Front door rebranding
+  - Talent â†’ Access
+  - Evolve â†’ Transform
+  - Unite â†’ Ventures (ATV)
+- Product organization under three doors
+  - Access: Search, Partnership, Freelance bench
+  - Transform: Workshop, Shape, Part-time plus
+  - Ventures: \[Products mentioned but unclear from transcript\]
+
+### Next Steps
+
+- Matt: Set up knowledge base and Granola automations
+- Matt: Continue development evenings/weekends while back at main job
+- Team: Submit quality client conversation examples to shared folder
+- Ollie: Join Granola folder and upload relevant meeting notes
+- Review and iteration planned for late October/November
+
+---
+
+Chat with meeting transcript: [https://notes.granola.ai/d/52e10a2b-220a-4838-97e6-ea32a09e7253?source=zapier](https://notes.granola.ai/d/52e10a2b-220a-4838-97e6-ea32a09e7253?source=zapier)
+
+## My Notes
+
+
+## Full Transcript
+ 
+Them: And I imagine the responses in that would be quite nuanced, but you would be able to pull out what is go where the lockers are.  
+Me: Yeah. Okay.  
+Them: Any sense.  
+Me: No. I told you I heard you.  
+Them: It's with it's with time as well, Ollie, when we are getting the team to be more consultative across the board. I think, hopefully, they will start to be having those conversations on those calls. So it'll almost like set up the brain. It'll always tee up some of that because they will be doing some of it as well. It won't be completely cold. But yeah, I wouldn't say we were probably there with all of the consultants all of their calls at the moment. So we are kinda starting off from quite a cold place where we're hoping the brain can do that thinking.  
+Me: Yeah. Yeah. And there'll probably be a bit of testing that goes on as part of this as part of this, like, first phase that maybe bleeds into phase two and that we have to adapt and then and tailor it as as we kind of roll out that phase two. Which is great that we're, like, you know, able to kind this in phases and iterate as as the thing grows. But  
+Them: Yeah. Because I this is all like a latter phase will also probably be the  
+Me: okay. Yeah.  
+Them: where then it's almost making recommendations, right, with the product?  
+Me: Yeah. I can see that. Yeah.  
+Them: Because that can be people's school right away. So I just want us all to be really clear and align on that, like the phasing. The first phase is to get data into the brain and get us being able  
+Me: Yeah.  
+Them: qualify and score it. All that data, and then we'll start teaching it to be able to kind of come up with more solutions.  
+Me: That makes a lot of sense. Yeah. I can see that as part of phase two. We can definitely build out something there, and I think that's the most exciting offering is once we feed it with the product. Information, it's like, it starts then for what is needed and it can, know, prioritize different clients and then maybe even send automated emails or updates weekly schedules. Emails to yourselves or, like, senior leadership around what's going on in the week you know, across the meetings. So, like, you don't need individual clients or, sorry, employees to update you, which is, like, really exciting.  
+Them: Yeah. I mean, you guys as we then start also then feeding the brain with broader scope of data, so transcripts from other calls or transcripts from podcast industry news, then I guess that's when it can start making real predictions of what's gonna happen.  
+Me: Yeah. Massively. Yeah. I think so. I think honestly, it's actually a really exciting project to be a part of. There is scope for this to turn into something, like, really powerful, specifically particularly in your industry where people probably doing anything similar. So, yeah,  
+Them: Yeah. Yeah.  
+Me: great to be on board. Outside. Granola, that makes a lot of sense. So then fit versus products. I mean, I'm gonna try and build in some element of the product side of thing in this first iteration if I can. But obviously, like, we are targeting that as you say, and I'm mainly for phase two. I'm just worried of, like,  
+Them: Yep.  
+Me: scope creep here and the work is already kinda stacking up. And so so I'll just keep keep in mind for now how we might do something like that.  
+Them: Yeah.  
+Me: Then stacking up the insights and the analysis over weeks and months and how that might build out. Into phase two as well. Aside from that, the qualification thresholds and the kind of leader board around individual meetings and employees and, like, who they're speaking to and how many meetings they've had and many are qualified across what metrics and all the rest. We'll build out into this first phase so you'll effectively have my ideas. Like, I React web app dashboard where you have your child interface where you can ask the questions and you get citations when you get  
+Them: Yep.  
+Me: responses back. Also the the leaderboard side that we talked about, so that'll be like there'll be a two parts a two part piece, and then phase two could expand into more like richer dashboards with, like, the trend analysis idea study recommendations, all that kind of stuff, and maybe a better product tailored. You know, there's a lot we can do off the back of this. It's about getting the brain as you say set up in this  
+Them: Probably I really liked the the simplicity of what you sent through before. Do know where the tick and the crosses? And in my mind, what I was thinking is, you know, say I'm one of the consultants I have a conversation. It's dropped into Granola. It then appears in the brain. I get  
+Me: Yeah. Mhmm.  
+Them: notification to either go to the brain or whether it comes through email, but it's like, you know, thanks for feeding the brain this  
+Me: Yeah.  
+Them: this information. Like, you're contributing to to the unknown brain. This is the school back conversation.  
+Me: Yeah. Yeah. Okay.  
+Them: And then some would see each of those five things, like you said. Next to it, a couple of, like, the key points that made the the criteria picked up on to give it that score. But it  
+Me: Okay.  
+Them: what you shared before, it said, like, now, and then it said, like, in brackets, like, they said,  
+Me: Evidence. Yeah.  
+Them: y zed. Yeah. A couple of little bits of evidence.  
+Me: Yeah.  
+Them: And, like, it's across. I don't know how we then view that once conversations are stored  
+Me: Mhmm.  
+Them: in the brain. I don't necessarily need think we need to, like, dive too deep into that right now, but I do love  
+Me: Yeah.  
+Them: fact that we can review conversations  
+Me: Yeah.  
+Them: And then, like, the  
+Me: Yeah.  
+Them: dashboard, I guess, would be where then we could look to verify people's performance. So then we'd have a look and the dashboard could tell us, okay. Last month, Sean had 26 conversations that he fed the brain and their average score was  
+Me: Fab. Yeah. I love that. So it's like a incentivized almost to, like, feed it in and  
+Them: four. Yeah.  
+Me: update the knowledge base, and then you're still getting your scores and metrics qualified. Yeah. It's brilliant. It's love everything about this. Okay, class. I'll factor that in on the email automated emails and stuff can be done. It might be a bit more yeah. It'd be, like, quite a ass just on top of this current workload with work and stuff, but I'll definitely factor that into I'd  
+Them: Yeah. It doesn't it doesn't need to be a right now thing. And like I said,  
+Me: 'd like Yeah.  
+Them: it's easier to have it within the brain and almost it pops up  
+Me: Mhmm.  
+Them: you know, it within the brain, people's last patients in the scoring. Just that's kind of like totally up for you making suggestions on how best that works.  
+Me: Yes. Yeah.  
+Them: I'm just basically purely off what would look nice from a visual perspective and from what a team  
+Me: Yeah. No. And I'll have ideas as I go in some  
+Them: team performance perspective.  
+Me: in late October November. I'll pitch, you know, different versions too, and we can have a review of what it might look like from there on. So, yeah, I'll just crack on with the brain stuff and get the knowledge base set up for now and the the automations to get from Granola and all the rest.  
+Them: I would say so just with  
+Me: Yeah.  
+Them: splitting these tasks up, Ollie is gonna be your go to guy for  
+Me: Okay.  
+Them: for the kind of setting up what good looks like from a data perspective.  
+Me: Mhmm. Mhmm. Perfect. Okay.  
+Them: So go to him with all of your questions. Obviously, keep me in the loop  
+Me: Yep.  
+Them: like that. But, yeah, he'll be the one helping you train the brain.  
+Me: Okay. Perfect. Yeah.  
+Them: And I'll be here for anything kind of operationally on, like, kind of yeah, systems and logins and all of that stuff. With the Granola trans let's figure out why those ones weren't coming through to you. I have emailed us I've  
+Me: Yeah.  
+Them: asked all the manager partners to submit at least once. That should be five in total, and I've got two currently in the deadlines today. So I should hopefully be able to get another load of transcript to you as well. And anything beyond that, just let us know.  
+Me: Yeah. I mean, is the Granola organization working for you guys? Because I obviously myself to it and was able to set up that folder, but I I don't see anybody else apart from me and you that's in that shared folder at the minute.  
+Them: No. It's just me I'm already trying. I was  
+Me: Yeah.  
+Them: sorry. What I was doing was I was dropping I was collecting them for you and dropping them in.  
+Me: Perfect. Okay. Yeah. I mean, if we can get it directly from people, I think that that'll be alright. But if I can get directly from people, it means I'll have the metadata around, you know, who dropped it in and what the calendar so there's there's added that comes when the individual actually drops it in. So it'd be good to get people through. And that if possible, you know, even Ali, the meeting notes that you shared in that email, if you could even just join that Granola shared folder and pop some of your meeting notes that you think would be good in from your granola. Like, it's it's really simple.  
+Them: Yeah. Perfect.  
+Me: That'd amazing. Club.  
+Them: How are people invited to that folder? They do they need to be sent an invitation? Can I do that through  
+Me: Yeah. So they can if you send an invitation or if you wanna give me logins, emails, I can have them manually or the link I've sent to you. Everyone in the unknown organization should have access through that link.  
+Them: Just yeah? I've just seen that app now, so I'm gonna add Ollie as a collaborator.  
+Me: Great. Yeah.  
+Them: I'm not gonna add all the managing partners just yet because they'll be like, what the hell is this? So  
+Me: Yeah. Yeah.  
+Them: And and Matt, are you happy for people just to upload like, because what we're say to them, upload every client? Conversation at this point or anyone that they think is good?  
+Me: I would think at this point, if we can do what's good,  
+Them: Yeah.  
+Me: we can, like, have a conversation about that later just so I can, like, tidy things up and make sure we're on the same page. And, yeah, I don't necessarily wanna be inundated right now where we're just setting everything  
+Them: No.  
+Me: So, yeah, just like a maybe, like, three or four examples good conversations that I've had with clients would be amazing.  
+Them: And might grow over the next couple of weeks just because we've only recently rolled out that five step criteria for calls. So if Molly, for instance, came back to me, she went great. I know exactly  
+Me: That's perfect.  
+Them: what need to do, but I haven't had any of those calls yet. But as soon as I do, I'll let you know. So I'll just say to them now, than emailing them to me, I'm gonna invite you to this folder and you just directly drop them in there. Cut out me. Cut out the middleman.  
+Me: Yeah. And I've added the link in that email. And if there's any issues, just let me know. Great. That's fantastic. Yeah. Just let me know if the Granola stuff doesn't work. And then the last thing, so just so I understand the fit tags, the talent of all adventures. That's just like an overarching higher level category above the products, isn't it really? Like, do they tie  
+Them: Yeah. We call them we call them front doors. Yeah. That's right. And by the way, we did we have changed the name  
+Me: see any matching Yes.  
+Them: access transform and ventures. And then on the  
+Me: Okay. So count of all ventures has changed to the ones that I've written down  
+Them: access transform inventors. Yeah. Even the ones on that slide, it will say it will say unite.  
+Me: But, yeah, that's  
+Them: But we're gonna say ventures instead. So  
+Me: Okay.  
+Them: access transform ventures ATV.  
+Me: Perfect. Cool. Let me just actually ATV. Access transform ventures.  
+Them: That's it.  
+Me: Great. So just to sorry. Just to make sure I got that right. So  
+Them: Yes.  
+Me: talents  
+Them: Yep.  
+Me: becoming access. Evolve is becoming transform.  
+Them: Yep.  
+Me: And ventures is becoming  
+Them: That's just ventures. Yeah. Yeah.  
+Me: adventures. Yeah. Okay.  
+Them: In the in the slides I sent you, ventures would that that's we unite. Yeah. Exactly.  
+Me: Yeah. Unite? Yeah. Great. So okay.  
+Them: Cool. And then and then, yeah, so the most important thing is underneath those three front doors, you will have three different products.  
+Me: Yeah.  
+Them: So door one in access, you have the search. The partnership, the bench, the freelance bench. And then the second, you have the workshop, the  
+Me: Partnership cost.  
+Them: shape of you, and part yeah. Part of the plus. There you go. And then the third, have  
+Me: No.  
+Them: bye bye Yeah.  
+Me: Yeah. Great. Okay.  
+Them: You got it.  
+Me: Fantastic. Yeah. Done my research. Okay, Klaus. I think  
+Them: Okay. Well done.  
+Me: of exciting stuff to come here. So let's just say I got the Granola notes up and running, and then I can crack on. And, obviously, I'm back at work. Work now, so, like, it'll just be mostly evenings and weekends, but I'll email as I need. And we'll figure it out. But yeah. Awesome, guys.  
+Them: Alright, ma'am. Thank you so much. Something else?  
+Me: Not at all. Thanks for jumping on. Appreciate it. Have a good day. Cheers.  
+Them: Cheers. Bye.  
+Me: Bye. 
