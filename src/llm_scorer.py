@@ -302,17 +302,39 @@ class LLMScorer:
         )
     
     def _format_transcript(self, transcript: Transcript) -> str:
-        """Format transcript for LLM analysis"""
+        """Format transcript for LLM analysis, prioritizing enhanced notes"""
         context = f"Company: {transcript.company or 'Unknown'}\n"
         context += f"Date: {transcript.date}\n"
         context += f"Participants: {', '.join(transcript.participants)}\n\n"
-        context += "Meeting Notes:\n"
-        
-        for note in transcript.notes:
-            timestamp = f"[{note.t}] " if note.t else ""
-            speaker = f"{note.speaker}: " if note.speaker else ""
-            context += f"{timestamp}{speaker}{note.text}\n"
-        
+
+        # Prioritize enhanced notes for better evidence diversity
+        if transcript.enhanced_notes and len(transcript.enhanced_notes.strip()) > 100:
+            context += "Enhanced Meeting Notes:\n"
+            context += transcript.enhanced_notes.strip() + "\n\n"
+
+            # Optionally add full transcript for additional context if enhanced notes are short
+            if len(transcript.enhanced_notes.strip()) < 1000:
+                context += "Additional Context (Full Transcript):\n"
+                if transcript.full_transcript:
+                    # Limit full transcript to avoid token overload
+                    full_transcript_text = transcript.full_transcript.strip()
+                    if len(full_transcript_text) > 3000:
+                        full_transcript_text = full_transcript_text[:3000] + "...\n[Transcript truncated]"
+                    context += full_transcript_text + "\n"
+                else:
+                    # Fallback to notes format
+                    for note in transcript.notes[:20]:  # Limit to first 20 notes
+                        timestamp = f"[{note.t}] " if note.t else ""
+                        speaker = f"{note.speaker}: " if note.speaker else ""
+                        context += f"{timestamp}{speaker}{note.text}\n"
+        else:
+            # Fallback to original format if no enhanced notes
+            context += "Meeting Notes:\n"
+            for note in transcript.notes:
+                timestamp = f"[{note.t}] " if note.t else ""
+                speaker = f"{note.speaker}: " if note.speaker else ""
+                context += f"{timestamp}{speaker}{note.text}\n"
+
         return context
     
     def _make_openai_request(self, prompt: str, context: str, retry_count: int = 0) -> Dict[str, Any]:
