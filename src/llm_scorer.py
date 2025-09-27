@@ -190,6 +190,23 @@ class LLMScorer:
                 norm.append(mapped)
         return norm
 
+    def _clean_evidence(self, evidence):
+        """Clean and validate evidence text"""
+        if not evidence or not isinstance(evidence, str):
+            return None
+
+        # Strip and check length
+        cleaned = evidence.strip()
+        if not cleaned:
+            return None
+
+        # Enforce 25-word limit for FIT evidence
+        words = cleaned.split()
+        if len(words) > 25:
+            cleaned = ' '.join(words[:25])
+
+        return cleaned
+
     def _validate_fit_response(self, result: Dict[str, Any], prompt: str, context: str, retry_count: int = 0) -> Dict[str, Any]:
         """Validate FIT response matches expected schema (includes services field)"""
         expected_keys = {"qualified", "reason", "summary", "services", "evidence"}
