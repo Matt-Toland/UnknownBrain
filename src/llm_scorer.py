@@ -562,20 +562,13 @@ class LLMScorer:
     def _check_measure(self, context: str) -> SectionResult:
         """Check for success metrics and measurement approach"""
         prompt = """
-        Analyze how this company measures SUCCESS using the Fun/Fame/Fortune framework:
+        Analyze how this company measures SUCCESS:
 
         What to look for:
-        1. FUN: Culture metrics, team satisfaction, work environment quality
-        2. FAME: Market recognition, brand building, industry leadership goals
-        3. FORTUNE: Revenue targets, profitability, financial metrics
-        4. Specific KPIs, measurements, or success criteria mentioned
-
-        Examples of MEASURE signals:
-        - "Target 95% employee satisfaction"
-        - "Aiming for market leader position"
-        - "Goal is $100M ARR by 2026"
-        - "Time-to-hire under 30 days"
-        - "eNPS score of 70+"
+        1. Financial: revenue/ARR, margin %, topline targets
+        2. Adoption/NPS: usage, adoption, NPS/eNPS
+        3. Operational: time-to-hire, cycle time, churn, retention
+        4. Timeframes: any target dates (SMART if present)
 
         Return JSON with exactly these fields:
         {
