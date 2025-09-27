@@ -83,12 +83,22 @@ MODEL_CONFIGS = {
 
 
 class LLMScorer:
+    # FIT service aliases for backward compatibility
+    FIT_ALIASES = {
+        "talent": "Access",
+        "access": "Access",
+        "evolve": "Transform",
+        "transform": "Transform",
+        "ventures": "Ventures",
+        "venture": "Ventures"
+    }
+
     def __init__(self, model: str = None):
         self.client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
         self.model = model or os.getenv("DEFAULT_LLM_MODEL", "gpt-4o-mini")
         self.temperature = float(os.getenv("LLM_TEMPERATURE", "0.1"))
         self.max_tokens = int(os.getenv("LLM_MAX_TOKENS", "500"))
-        
+
         if not os.getenv("OPENAI_API_KEY"):
             raise ValueError("OPENAI_API_KEY environment variable not set")
         
@@ -166,6 +176,20 @@ class LLMScorer:
 
         return result
 
+    def _normalize_fit_services(self, items):
+        """Normalize FIT service names for backward compatibility"""
+        norm = []
+        if not isinstance(items, list):
+            return norm
+        for x in items:
+            if not isinstance(x, str):
+                continue
+            key = x.strip().lower()
+            mapped = self.FIT_ALIASES.get(key)
+            if mapped and mapped not in norm:
+                norm.append(mapped)
+        return norm
+
     def _validate_fit_response(self, result: Dict[str, Any], prompt: str, context: str, retry_count: int = 0) -> Dict[str, Any]:
         """Validate FIT response matches expected schema (includes services field)"""
         expected_keys = {"qualified", "reason", "summary", "services", "evidence"}
@@ -210,7 +234,9 @@ class LLMScorer:
             else:
                 result["services"] = []
 
-
+        # Normalize service names for backward compatibility
+        result["services"] = self._normalize_fit_services(result.get("services", []))
+        result["evidence"] = self._clean_evidence(result.get("evidence"))
         return result
 
     def _extract_client_info(self, transcript: Transcript) -> ClientInfo:
@@ -630,35 +656,33 @@ class LLMScorer:
     def _check_fit(self, context: str) -> FitResult:
         """Check which UNKNOWN services match the company's needs"""
         prompt = """
-        Classify this company's needs into UNKNOWN service categories:
+        Classify this company's needs into UNKNOWN front-door categories:
 
-        TALENT (Recruitment & Hiring):
-        - Hiring needs, recruitment challenges
-        - Time-to-hire issues, sourcing problems
-        - Interview processes, candidate pipelines
-        - Offer acceptance, onboarding
+        ACCESS (People to deliver):
+        - Hiring needs, recruitment challenges, time-to-hire issues
+        - Pipelines, sourcing, exec search, freelance/bench, fractional TA
 
-        EVOLVE (Organizational Development):
-        - Organization design, structure changes
-        - Compensation, salary bands, benchmarking
-        - Performance management systems
-        - Culture, retention, employee experience
-        - Team scaling, management development
+        TRANSFORM (Org strategy / operating model):
+        - Org design, structure changes, role architecture, compensation bands
+        - Performance systems, culture/retention, scaling teams, talent strategy
 
-        VENTURES (Growth & Innovation):
-        - New market entry, expansion plans
-        - Innovation projects, pilots, MVPs
+        VENTURES (Growth via partnerships/M&A/new markets):
+        - Market entry, acquisitions, partnerships, JV/ventures, pilots/MVPs
         - Business model transformation
-        - M&A, partnerships, ventures
 
-        Return JSON with exactly these fields:
+        Return STRICT JSON with exactly these fields:
         {
             "qualified": true or false,
             "reason": "short explanation for decision",
-            "summary": "1-3 sentences; include numbers/timeframes only if stated; else 'Not stated.'",
-            "services": ["talent", "evolve", "ventures"],
-            "evidence": "verbatim quote or null"
+            "summary": "1–3 sentences; include numbers/timeframes only if stated; else 'Not stated.'",
+            "services": ["Access","Transform","Ventures"],   // choose 1–3; Title Case
+            "evidence": "verbatim <= 25 words or null"
         }
+
+        Rules:
+        - Use only facts in the notes; never invent.
+        - If unclear, set qualified=false and explain why in reason.
+        - Evidence must be a verbatim snippet (<= 25 words) or null.
         """
 
         result = self._make_openai_request(prompt, context)
