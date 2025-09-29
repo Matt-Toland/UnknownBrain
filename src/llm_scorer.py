@@ -94,7 +94,9 @@ class LLMScorer:
     }
 
     def __init__(self, model: str = None):
-        self.client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+        # Set longer timeout for GPT-5 models which need more time for reasoning
+        timeout = 120.0  # 2 minutes for reasoning models
+        self.client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"), timeout=timeout)
         self.model = model or os.getenv("DEFAULT_LLM_MODEL", "gpt-4o-mini")
         self.temperature = float(os.getenv("LLM_TEMPERATURE", "0.1"))
         self.max_tokens = int(os.getenv("LLM_MAX_TOKENS", "500"))
@@ -346,9 +348,18 @@ class LLMScorer:
     
     def _format_transcript(self, transcript: Transcript) -> str:
         """Format transcript for LLM analysis, prioritizing enhanced notes"""
-        context = f"Company: {transcript.company or 'Unknown'}\n"
-        context += f"Date: {transcript.date}\n"
-        context += f"Participants: {', '.join(transcript.participants)}\n\n"
+        context = f"""CRITICAL SPEAKER CONTEXT:
+- "Me:" = Unknown representative (IGNORE for scoring)
+- "Them:" = Client company (ANALYZE for scoring)
+
+WARNING: You MUST analyze ONLY the CLIENT company's metrics, needs, and situation.
+Do NOT use any statements from "Me:" speakers as evidence about the client.
+
+Company being analyzed: {transcript.company or 'Unknown'}
+Date: {transcript.date}
+Participants: {', '.join(transcript.participants)}
+
+"""
 
         # Prioritize enhanced notes for better evidence diversity
         if transcript.enhanced_notes and len(transcript.enhanced_notes.strip()) > 100:
@@ -517,7 +528,14 @@ class LLMScorer:
             content = content[3:-3].strip()
         
         try:
-            return json.loads(content)
+            result = json.loads(content)
+
+            # Normalize evidence field if it's a list
+            if "evidence" in result and isinstance(result["evidence"], list):
+                # Join list elements into a single string
+                result["evidence"] = " ".join(str(item) for item in result["evidence"] if item)
+
+            return result
         except json.JSONDecodeError as e:
             print(f"JSON decode error: {e}")
             print(f"Response content: {content}")
@@ -533,7 +551,8 @@ class LLMScorer:
     def _check_now(self, context: str) -> SectionResult:
         """Check for current state and immediate hiring needs"""
         prompt = """
-        Analyze this meeting transcript for the company's CURRENT STATE and IMMEDIATE hiring needs:
+        Analyze this meeting transcript for the CLIENT company's CURRENT STATE and IMMEDIATE hiring needs.
+        ONLY analyze "Them:" speakers (the client). IGNORE all "Me:" speakers (Unknown representative).
 
         What to look for:
         1. Current company scale (revenue, headcount, size indicators)
@@ -551,8 +570,8 @@ class LLMScorer:
         {
             "qualified": true or false,
             "reason": "short explanation for decision",
-            "summary": "1-3 sentences; include numbers/timeframes only if stated; else 'Not stated.'",
-            "evidence": "verbatim quote or null"
+            "summary": "1-3 sentences about the CLIENT (Them: speakers only)",
+            "evidence": "verbatim quote from 'Them:' speakers only, NEVER from 'Me:' speakers"
         }
         """
 
@@ -569,7 +588,8 @@ class LLMScorer:
     def _check_next(self, context: str) -> SectionResult:
         """Check for future growth plans and vision"""
         prompt = """
-        Analyze this meeting transcript for the company's FUTURE VISION and growth ambitions:
+        Analyze this meeting transcript for the CLIENT company's FUTURE VISION and growth ambitions.
+        ONLY analyze "Them:" speakers (the client). IGNORE all "Me:" speakers (Unknown representative).
 
         What to look for:
         1. Growth ambition (scale targets, exit plans, market expansion)
@@ -587,8 +607,8 @@ class LLMScorer:
         {
             "qualified": true or false,
             "reason": "short explanation for decision",
-            "summary": "1-3 sentences; include numbers/timeframes only if stated; else 'Not stated.'",
-            "evidence": "verbatim quote or null"
+            "summary": "1-3 sentences about the CLIENT (Them: speakers only)",
+            "evidence": "verbatim quote from 'Them:' speakers only, NEVER from 'Me:' speakers"
         }
         """
 
@@ -605,7 +625,8 @@ class LLMScorer:
     def _check_measure(self, context: str) -> SectionResult:
         """Check for success metrics and measurement approach"""
         prompt = """
-        Analyze how this company measures SUCCESS:
+        Analyze how this CLIENT company measures SUCCESS.
+        ONLY analyze "Them:" speakers (the client). IGNORE all "Me:" speakers (Unknown representative).
 
         What to look for:
         1. Financial: revenue/ARR, margin %, topline targets
@@ -617,8 +638,8 @@ class LLMScorer:
         {
             "qualified": true or false,
             "reason": "short explanation for decision",
-            "summary": "1-3 sentences; include numbers/timeframes only if stated; else 'Not stated.'",
-            "evidence": "verbatim quote or null"
+            "summary": "1-3 sentences about the CLIENT (Them: speakers only)",
+            "evidence": "verbatim quote from 'Them:' speakers only, NEVER from 'Me:' speakers"
         }
         """
 
@@ -635,7 +656,8 @@ class LLMScorer:
     def _check_blocker(self, context: str) -> SectionResult:
         """Check for blockers preventing growth"""
         prompt = """
-        Identify the company's biggest BLOCKERS preventing them from achieving their goals:
+        Identify the CLIENT company's biggest BLOCKERS preventing them from achieving their goals.
+        ONLY analyze "Them:" speakers (the client). IGNORE all "Me:" speakers (Unknown representative).
 
         Categories to look for:
         1. TALENT GAPS: Can't find right people, skills shortages
@@ -655,8 +677,8 @@ class LLMScorer:
         {
             "qualified": true or false,
             "reason": "short explanation for decision",
-            "summary": "1-3 sentences; include numbers/timeframes only if stated; else 'Not stated.'",
-            "evidence": "verbatim quote or null"
+            "summary": "1-3 sentences about the CLIENT (Them: speakers only)",
+            "evidence": "verbatim quote from 'Them:' speakers only, NEVER from 'Me:' speakers"
         }
         """
 
@@ -673,7 +695,8 @@ class LLMScorer:
     def _check_fit(self, context: str) -> FitResult:
         """Check which UNKNOWN services match the company's needs"""
         prompt = """
-        Classify this company's needs into UNKNOWN front-door categories:
+        Classify this CLIENT company's needs into UNKNOWN front-door categories.
+        ONLY analyze "Them:" speakers (the client). IGNORE all "Me:" speakers (Unknown representative).
 
         ACCESS (People to deliver):
         - Hiring needs, recruitment challenges, time-to-hire issues
@@ -691,9 +714,9 @@ class LLMScorer:
         {
             "qualified": true or false,
             "reason": "short explanation for decision",
-            "summary": "1–3 sentences; include numbers/timeframes only if stated; else 'Not stated.'",
+            "summary": "1–3 sentences about the CLIENT (Them: speakers only)",
             "services": ["Access","Transform","Ventures"],   // choose 1–3; Title Case
-            "evidence": "verbatim <= 25 words or null"
+            "evidence": "verbatim <= 25 words from 'Them:' speakers only, NEVER from 'Me:' speakers"
         }
 
         Rules:
