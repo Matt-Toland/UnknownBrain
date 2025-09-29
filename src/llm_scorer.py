@@ -560,26 +560,28 @@ Participants: {', '.join(transcript.participants)}
     def _check_now(self, context: str) -> SectionResult:
         """Check for current state and immediate hiring needs"""
         prompt = """
-        Analyze this meeting transcript for the CLIENT company's CURRENT STATE and IMMEDIATE hiring needs.
+        Analyze this meeting transcript for the CLIENT company's CURRENT STATE and IMMEDIATE talent needs.
         ONLY analyze "Them:" speakers (the client). IGNORE all "Me:" speakers (Unknown representative).
 
-        What to look for:
-        1. Current company scale (revenue, headcount, size indicators)
-        2. Immediate hiring needs (within 60 days)
-        3. Urgent talent requirements or open roles
-        4. Current team capacity issues
+        What to look for (aligned with UNKNOWN Access products):
+        1. Current company scale (revenue, headcount, team structure)
+        2. Immediate hiring needs - especially for roles that "change where they're going"
+        3. Need for flexible talent model without compromising on quality (The Bench)
+        4. TA team struggling to access right talent (The Partnership)
+        5. Critical roles blocking growth or transformation
 
-        Examples of NOW signals:
-        - "We have 50 employees and $10M ARR"
-        - "Need to hire 3 engineers this month"
-        - "Team is overwhelmed, need help ASAP"
-        - "Critical roles open, blocking client delivery"
+        Examples of NOW signals for UNKNOWN Access:
+        - "We need someone who can change our trajectory, not just fill a role"
+        - "Our TA team can't find the caliber of people we need"
+        - "Need exceptional freelance talent on tap"
+        - "Looking for people we didn't even know existed"
+        - "Critical senior hire blocking our next phase"
 
         Return JSON with exactly these fields:
         {
             "qualified": true or false,
-            "reason": "short explanation for decision",
-            "summary": "1-3 sentences about the CLIENT (Them: speakers only)",
+            "reason": "short explanation linking to UNKNOWN Access products if relevant",
+            "summary": "1-3 sentences about the CLIENT's current talent situation",
             "evidence": "verbatim quote from 'Them:' speakers only, NEVER from 'Me:' speakers"
         }
         """
@@ -597,26 +599,30 @@ Participants: {', '.join(transcript.participants)}
     def _check_next(self, context: str) -> SectionResult:
         """Check for future growth plans and vision"""
         prompt = """
-        Analyze this meeting transcript for the CLIENT company's FUTURE VISION and growth ambitions.
+        Analyze this meeting transcript for the CLIENT company's FUTURE VISION and transformation needs.
         ONLY analyze "Them:" speakers (the client). IGNORE all "Me:" speakers (Unknown representative).
 
-        What to look for:
-        1. Growth ambition (scale targets, exit plans, market expansion)
-        2. Future hiring plans (60-180 days out)
-        3. Vision of where they want to be
-        4. Strategic initiatives requiring talent
+        What to look for (aligned with UNKNOWN Transform & Ventures):
+        1. Vision of becoming something new (Transform: "what you're becoming")
+        2. Need to work ON the business model, not just IN the business
+        3. Plans for M&A, partnerships, or exits (Ventures)
+        4. Desire to build talent strategy for creative capital growth
+        5. Expansion plans requiring new operating models
 
-        Examples of NEXT signals:
-        - "Planning to double headcount next year"
-        - "After Series B, we'll expand to Europe"
-        - "Goal is IPO in 24 months"
-        - "Will need 20 more engineers once funding closes"
+        Examples of NEXT signals for UNKNOWN Transform/Ventures:
+        - "We know what we want to become but not how to get there"
+        - "Need to redesign our org for where we're going"
+        - "Looking at acquisitions but unsure about valuation"
+        - "Want to build conditions for creativity to thrive"
+        - "Exploring partnerships to accelerate growth"
+        - "Need outside perspective on our talent strategy"
+        - "75% of acquisitions fail - we can't afford that"
 
         Return JSON with exactly these fields:
         {
             "qualified": true or false,
-            "reason": "short explanation for decision",
-            "summary": "1-3 sentences about the CLIENT (Them: speakers only)",
+            "reason": "short explanation linking to Transform/Ventures products if relevant",
+            "summary": "1-3 sentences about the CLIENT's transformation journey",
             "evidence": "verbatim quote from 'Them:' speakers only, NEVER from 'Me:' speakers"
         }
         """
@@ -665,28 +671,33 @@ Participants: {', '.join(transcript.participants)}
     def _check_blocker(self, context: str) -> SectionResult:
         """Check for blockers preventing growth"""
         prompt = """
-        Identify the CLIENT company's biggest BLOCKERS preventing them from achieving their goals.
+        Identify the CLIENT company's biggest BLOCKERS that UNKNOWN can solve.
         ONLY analyze "Them:" speakers (the client). IGNORE all "Me:" speakers (Unknown representative).
 
-        Categories to look for:
-        1. TALENT GAPS: Can't find right people, skills shortages
-        2. STRUCTURE: Org design issues, process problems
-        3. GROWTH STALLS: Market, product, or sales constraints
-        4. INVESTOR PRESSURE: Board demands, funding requirements
-        5. EXTERNAL: Regulatory, legal, market conditions
+        Blockers aligned with UNKNOWN solutions:
+        1. ACCESS BLOCKERS:
+           - "Can't access talent we didn't know existed"
+           - "TA team lacks specialist support to find right people"
+           - "Need game-changing hires, not just role-fillers"
+           - "Talent compromises due to flexibility needs"
 
-        Examples of BLOCKER signals:
-        - "Can't find senior engineers"
-        - "Our onboarding process is broken"
-        - "Market is saturated"
-        - "Board pushing for profitability"
-        - "Regulatory approval taking too long"
+        2. TRANSFORM BLOCKERS:
+           - "Working IN the business, can't work ON the business"
+           - "Don't know how to build for what we're becoming"
+           - "Lack talent strategy for creative capital growth"
+           - "No clear blueprint from current state to future state"
+
+        3. VENTURES BLOCKERS:
+           - "Don't know how to value creative capital"
+           - "Fear of being in the 75% of failed acquisitions"
+           - "Need connections but don't want cattle-mart feeling"
+           - "Unsure of our worth to potential partners"
 
         Return JSON with exactly these fields:
         {
             "qualified": true or false,
-            "reason": "short explanation for decision",
-            "summary": "1-3 sentences about the CLIENT (Them: speakers only)",
+            "reason": "explain which UNKNOWN products could solve their blockers",
+            "summary": "1-3 sentences about blockers UNKNOWN can address",
             "evidence": "verbatim quote from 'Them:' speakers only, NEVER from 'Me:' speakers"
         }
         """
@@ -704,34 +715,35 @@ Participants: {', '.join(transcript.participants)}
     def _check_fit(self, context: str) -> FitResult:
         """Check which UNKNOWN services match the company's needs"""
         prompt = """
-        Classify this CLIENT company's needs into UNKNOWN front-door categories.
+        Classify this CLIENT company's needs into UNKNOWN's 3 product categories.
         ONLY analyze "Them:" speakers (the client). IGNORE all "Me:" speakers (Unknown representative).
 
-        ACCESS (People to deliver):
-        - Hiring needs, recruitment challenges, time-to-hire issues
-        - Pipelines, sourcing, exec search, freelance/bench, fractional TA
+        ACCESS (When you need the right people to deliver):
+        - The Search: Need someone to change trajectory, not just fill a role
+        - The Bench: Need exceptional freelance talent without compromising quality
+        - The Partnership: TA team needs specialist support to access right talent
+        Look for: "People we didn't know existed", "change where we're going", "on tap talent"
 
-        TRANSFORM (Org strategy / operating model):
-        - Org design, structure changes, role architecture, compensation bands
-        - Performance systems, culture/retention, scaling teams, talent strategy
+        TRANSFORM (When you need the right strategy to become more):
+        - Transform Workshop: Know what to become but not how to get there
+        - Shape of You: Need to change but can't put finger on what
+        - Partnership+: Have transformation goals but lack skills to deliver
+        Look for: "Work ON not IN business", "talent success model", "creative capital"
 
-        VENTURES (Growth via partnerships/M&A/new markets):
-        - Market entry, acquisitions, partnerships, JV/ventures, pilots/MVPs
-        - Business model transformation
+        VENTURES (When you need the right partnerships for step-change):
+        - Fake or Fortune (Buy): M&A deal completion and valuation
+        - The Closer (Buy): Finding acquisition targets that fit
+        - The Intro (Sell): Finding partners who truly get your value
+        Look for: "Value creative capital", "75% acquisitions fail", "exit planning"
 
         Return STRICT JSON with exactly these fields:
         {
             "qualified": true or false,
-            "reason": "short explanation for decision",
-            "summary": "1–3 sentences about the CLIENT (Them: speakers only)",
+            "reason": "explain which specific UNKNOWN products match their needs",
+            "summary": "1–3 sentences mapping needs to UNKNOWN products",
             "services": ["Access","Transform","Ventures"],   // choose 1–3; Title Case
-            "evidence": "verbatim <= 25 words from 'Them:' speakers only, NEVER from 'Me:' speakers"
+            "evidence": "verbatim <= 25 words from 'Them:' speakers only"
         }
-
-        Rules:
-        - Use only facts in the notes; never invent.
-        - If unclear, set qualified=false and explain why in reason.
-        - Evidence must be a verbatim snippet (<= 25 words) or null.
         """
 
         result = self._make_openai_request(prompt, context)
