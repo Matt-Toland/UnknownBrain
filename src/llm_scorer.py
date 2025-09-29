@@ -541,11 +541,20 @@ Participants: {', '.join(transcript.participants)}
             print(f"Response content: {content}")
             print(f"Model: {self.model}")
             
-            # Retry on JSON errors for reasoning models
+            # Retry on JSON errors with fallback strategy
             if retry_count < 1 and (self.model.startswith("gpt-5") or "o1" in self.model):
+                # First retry: Try same model again
                 print(f"Retrying {self.model} due to JSON error... ({retry_count + 1}/2)")
                 return self._make_openai_request(prompt, context, retry_count + 1)
-            
+            elif retry_count == 1 and self.model.startswith("gpt-5"):
+                # Second retry: Fall back to GPT-4o-mini for reliability
+                print(f"JSON error persists with {self.model}, falling back to gpt-4o-mini...")
+                original_model = self.model
+                self.model = "gpt-4o-mini"
+                result = self._make_openai_request(prompt, context, retry_count + 1)
+                self.model = original_model  # Restore original model
+                return result
+
             return {"qualified": False, "reason": "JSON parse error", "summary": "Invalid response format", "evidence": None}
     
     def _check_now(self, context: str) -> SectionResult:
