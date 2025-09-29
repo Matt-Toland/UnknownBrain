@@ -50,6 +50,11 @@ temp/
 !README.md
 !requirements.txt
 
+# Temporary processing outputs
+latest_scores.json
+processing_results.json
+client_reports/
+
 # Coverage reports
 htmlcov/
 .coverage
