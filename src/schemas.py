@@ -77,6 +77,11 @@ class NewScoreResult(BaseModel):
     blocker: SectionResult = Field(..., description="BLOCKER section scoring (JSON blob)")
     fit: FitResult = Field(..., description="FIT section scoring (JSON blob)")
 
+    # Client taxonomy tagging
+    challenges: List[str] = Field(default_factory=list, description="Client challenges from taxonomy")
+    results: List[str] = Field(default_factory=list, description="Desired results from taxonomy")
+    offering: Optional[str] = Field(None, description="Primary offering type from taxonomy")
+
     # Processing metadata
     scored_at: datetime = Field(..., description="When scoring was performed")
     llm_model: str = Field(..., description="LLM model used for scoring")
@@ -151,6 +156,11 @@ class NewScoredTranscript(BaseModel):
     measure: Dict[str, Any] = Field(..., description="MEASURE scoring as JSON blob")
     blocker: Dict[str, Any] = Field(..., description="BLOCKER scoring as JSON blob")
     fit: Dict[str, Any] = Field(..., description="FIT scoring as JSON blob")
+
+    # Client taxonomy tagging
+    challenges: List[str] = Field(default_factory=list, description="Client challenges from taxonomy")
+    results: List[str] = Field(default_factory=list, description="Desired results from taxonomy")
+    offering: Optional[str] = Field(None, description="Primary offering type from taxonomy")
 
     # Processing metadata
     scored_at: datetime = Field(..., description="When scoring was performed")

@@ -93,6 +93,79 @@ class LLMScorer:
         "venture": "Ventures"
     }
 
+    # Client taxonomy controlled vocabularies
+    TAXONOMY_CHALLENGES = [
+        "Diversify product & services",
+        "Expand locations",
+        "Succession planning",
+        "Shrinking margin",
+        "Spikes in workload",
+        "Losing revenue cos lack of staff",
+        "Needing specialists in short notice",
+        "Maintaining creative quality without ballooning overheads",
+        "Margins eroding as business scales",
+        "Misalignment between creating value and delivering value",
+        "Unsure how to value their business",
+        "Not knowing which businesses are right to buy / acquire",
+        "Lacking intros to PE or M&A firms",
+        "Missing out on growth opportunities as they can't move fast enough",
+        "Don't have networks in specific locations",
+        "Diversify product",
+        "Consolidating agencies",
+        "Elevating creativity"
+    ]
+
+    TAXONOMY_RESULTS = [
+        "Revenue Growth",
+        "Win rate on pitches %",
+        "Access to new markets and clients",
+        "Ability to take on more complex higher margin work",
+        "Lower fixed cost base through flexible talent models",
+        "More profit per head",
+        "Reduced talent churn",
+        "Reduced inefficiencies",
+        "Avoiding mishires",
+        "Avoiding stagnancy",
+        "Smooth succession protecting value and continuity",
+        "Built proprietary products that lead to higher valuations",
+        "Faster hiring in scarce talent pools",
+        "Foresight of costs with flexible talent models",
+        "Foresight of resource with always-on talent",
+        "Scaled systems that mean we focus on compounding our strengths",
+        "Won industry accolades",
+        "Increased quality of output meaning more client wins",
+        "Stronger brand reputation and client stickiness",
+        "Stronger employer brand reputation and talent stickiness",
+        "Distinctive talent advantage that competitors can't replicate easily"
+    ]
+
+    TAXONOMY_OFFERINGS = [
+        "Creative & Design",
+        "Branding Consultancy",
+        "Product",
+        "Content Studio",
+        "Production Company",
+        "Influencer / Creator agency",
+        "Media",
+        "Performance Marketing",
+        "PR / Comms",
+        "Experiential",
+        "Social",
+        "Innovation",
+        "Data",
+        "E-Commerce",
+        "AI Automation",
+        "Brand",
+        "Health & Pharma",
+        "B2B",
+        "Sports & Entertainment",
+        "Sustainability agency",
+        "Luxury & Fashion",
+        "Gaming",
+        "Fintech",
+        "Other"
+    ]
+
     def __init__(self, model: str = None):
         # Set longer timeout for GPT-5 models which need more time for reasoning
         timeout = 120.0  # 2 minutes for reasoning models
@@ -712,6 +785,78 @@ Participants: {', '.join(transcript.participants)}
             evidence=validated_result.get("evidence")
         )
     
+    def _tag_taxonomy(self, context: str) -> Dict[str, Any]:
+        """Tag meeting with client's controlled taxonomy vocabularies"""
+        challenges_list = "\n".join(f"- {c}" for c in self.TAXONOMY_CHALLENGES)
+        results_list = "\n".join(f"- {r}" for r in self.TAXONOMY_RESULTS)
+        offerings_list = "\n".join(f"- {o}" for o in self.TAXONOMY_OFFERINGS)
+
+        prompt = f"""
+        Tag this meeting transcript using ONLY the predefined taxonomy labels below.
+        ONLY analyze "Them:" speakers (the client). IGNORE "Me:" speakers (Unknown representative).
+
+        CHALLENGES (select 0-5 most relevant):
+{challenges_list}
+
+        RESULTS (select 0-5 most relevant):
+{results_list}
+
+        OFFERINGS (select exactly 1 primary or null):
+{offerings_list}
+
+        Instructions:
+        1. Only return labels that EXACTLY match the lists above (case-sensitive)
+        2. For challenges: identify client's current pain points
+        3. For results: identify desired outcomes they're seeking
+        4. For offerings: identify their primary business type/sector
+        5. Return null for offering if none clearly fit
+
+        Return STRICT JSON:
+        {{
+            "challenges": ["label1", "label2"],  // 0-5 labels from CHALLENGES list only
+            "results": ["label1", "label2"],     // 0-5 labels from RESULTS list only
+            "offering": "label or null"          // exactly 1 label from OFFERINGS or null
+        }}
+        """
+
+        try:
+            result = self._make_openai_request(prompt, context)
+
+            # Validate and filter to ensure only valid taxonomy labels
+            validated = {
+                "challenges": [],
+                "results": [],
+                "offering": None
+            }
+
+            # Validate challenges
+            if "challenges" in result and isinstance(result["challenges"], list):
+                validated["challenges"] = [
+                    c for c in result["challenges"]
+                    if c in self.TAXONOMY_CHALLENGES
+                ][:5]  # Max 5
+
+            # Validate results
+            if "results" in result and isinstance(result["results"], list):
+                validated["results"] = [
+                    r for r in result["results"]
+                    if r in self.TAXONOMY_RESULTS
+                ][:5]  # Max 5
+
+            # Validate offering (single value)
+            if "offering" in result and result["offering"] in self.TAXONOMY_OFFERINGS:
+                validated["offering"] = result["offering"]
+
+            return validated
+
+        except Exception as e:
+            print(f"Error in taxonomy tagging: {e}")
+            return {
+                "challenges": [],
+                "results": [],
+                "offering": None
+            }
+
     def _check_fit(self, context: str) -> FitResult:
         """Check which UNKNOWN services match the company's needs"""
         prompt = """
@@ -773,6 +918,9 @@ Participants: {', '.join(transcript.participants)}
         blocker_result = self._check_blocker(context)
         fit_result = self._check_fit(context)
 
+        # Tag with client taxonomy
+        taxonomy_tags = self._tag_taxonomy(context)
+
         # Calculate total qualified sections
         total_qualified_sections = (
             int(now_result.qualified) +
@@ -792,6 +940,9 @@ Participants: {', '.join(transcript.participants)}
             measure=measure_result,
             blocker=blocker_result,
             fit=fit_result,
+            challenges=taxonomy_tags.get("challenges", []),
+            results=taxonomy_tags.get("results", []),
+            offering=taxonomy_tags.get("offering"),
             scored_at=datetime.now(timezone.utc),
             llm_model=self.model
         )
