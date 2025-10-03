@@ -649,6 +649,11 @@ async def upload_new_format_to_bigquery(
                 'evidence': new_score_result.fit.evidence
             },
 
+            # Client taxonomy tagging
+            'challenges': new_score_result.challenges,
+            'results': new_score_result.results,
+            'offering': new_score_result.offering,
+
             # Processing metadata
             'scored_at': new_score_result.scored_at.isoformat(timespec='seconds'),
             'llm_model': new_score_result.llm_model
