@@ -103,6 +103,11 @@ class BigQueryLoader:
             bigquery.SchemaField("blocker", "JSON", mode="REQUIRED", description="BLOCKER scoring as JSON blob"),
             bigquery.SchemaField("fit", "JSON", mode="REQUIRED", description="FIT scoring as JSON blob"),
 
+            # Client taxonomy tagging
+            bigquery.SchemaField("challenges", "STRING", mode="REPEATED", description="Client challenges from taxonomy"),
+            bigquery.SchemaField("results", "STRING", mode="REPEATED", description="Desired results from taxonomy"),
+            bigquery.SchemaField("offering", "STRING", mode="NULLABLE", description="Primary offering type from taxonomy"),
+
             # Processing metadata
             bigquery.SchemaField("scored_at", "TIMESTAMP", mode="REQUIRED"),
             bigquery.SchemaField("llm_model", "STRING", mode="REQUIRED")
@@ -288,6 +293,9 @@ class BigQueryLoader:
                 measure = source.measure,
                 blocker = source.blocker,
                 fit = source.fit,
+                challenges = source.challenges,
+                results = source.results,
+                offering = source.offering,
                 scored_at = source.scored_at,
                 llm_model = source.llm_model
         WHEN NOT MATCHED THEN
