@@ -31,6 +31,9 @@ class ClientReportGenerator:
             measure,
             blocker,
             fit,
+            challenges,
+            results,
+            offering,
             scored_at,
             llm_model
         FROM `angular-stacker-471711-k4.unknown_brain.meeting_intel`
@@ -85,7 +88,10 @@ class ClientReportGenerator:
                     'next': safe_json_parse(row.get('next')),
                     'measure': safe_json_parse(row.get('measure')),
                     'blocker': safe_json_parse(row.get('blocker')),
-                    'fit': safe_json_parse(row.get('fit'))
+                    'fit': safe_json_parse(row.get('fit')),
+                    'challenges': row.get('challenges', []),
+                    'results': row.get('results', []),
+                    'offering': row.get('offering', '')
                 }
                 processed_results.append(processed_row)
 
@@ -164,6 +170,7 @@ class ClientReportGenerator:
                 'MEASURE Score', 'MEASURE Evidence', 'MEASURE Reason', 'MEASURE Summary',
                 'BLOCKER Score', 'BLOCKER Evidence', 'BLOCKER Reason', 'BLOCKER Summary',
                 'FIT Score', 'FIT Labels', 'FIT Evidence', 'FIT Reason', 'FIT Summary',
+                'Challenges', 'Results', 'Offering',
                 'Scored At', 'Model'
             ])
 
@@ -201,6 +208,9 @@ class ClientReportGenerator:
 
                 participants_str = '; '.join(r['participants']) if r['participants'] else ''
 
+                challenges_str = '; '.join(r['challenges']) if r['challenges'] else ''
+                results_str = '; '.join(r['results']) if r['results'] else ''
+
                 writer.writerow([
                     r['meeting_id'],
                     r['title'],
@@ -229,6 +239,9 @@ class ClientReportGenerator:
                     get_evidence(r['fit']),
                     get_reason(r['fit']),
                     get_summary(r['fit']),
+                    challenges_str,
+                    results_str,
+                    r['offering'],
                     r['scored_at'],
                     r['llm_model']
                 ])
