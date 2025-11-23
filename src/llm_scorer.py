@@ -331,27 +331,60 @@ class LLMScorer:
         result["evidence"] = self._clean_evidence(result.get("evidence"))
         return result
 
+    def _normalize_client_name(self, client_name: str) -> str:
+        """
+        Normalize client name using BigQuery mappings (cached)
+
+        Uses lazy loading and caching to avoid repeated BigQuery calls
+        """
+        # Initialize cache on first use
+        if not hasattr(self, '_client_mappings_cache'):
+            try:
+                from .bq_loader import BigQueryLoader
+                loader = BigQueryLoader()
+                self._client_mappings_cache = loader.load_client_mappings()
+            except Exception as e:
+                print(f"Warning: Could not load client mappings from BigQuery: {e}")
+                self._client_mappings_cache = {}
+
+        # Apply normalization if mapping exists
+        return self._client_mappings_cache.get(client_name, client_name)
+
     def _extract_client_info(self, transcript: Transcript) -> ClientInfo:
-        """Extract client information using three-tier approach"""
+        """Extract client information using three-tier approach with automatic normalization"""
         # Tier 1: Use LLM extraction (most accurate)
         llm_client = self._extract_client_with_llm(transcript)
         if llm_client.client and llm_client.client.strip():
+            # Auto-normalize using BigQuery mappings
+            normalized_name = self._normalize_client_name(llm_client.client)
+            llm_client.client = normalized_name
             return llm_client
 
         # Tier 2: Extract from filename (fallback)
         filename_client = self._extract_client_from_filename(transcript.meeting_id)
         if filename_client and len(filename_client) > 3 and not filename_client.lower().startswith(('auto', 'meeting', 'call')):
+            # Auto-normalize using BigQuery mappings
+            normalized_name = self._normalize_client_name(filename_client)
             return ClientInfo(
-                client=filename_client,
+                client=normalized_name,
                 source="filename"
             )
 
         # Tier 3: Domain heuristics fallback
         domain_client = self._extract_client_from_domain(transcript)
+        # Auto-normalize using BigQuery mappings
+        if domain_client.client:
+            normalized_name = self._normalize_client_name(domain_client.client)
+            domain_client.client = normalized_name
         return domain_client
 
     def _extract_client_from_filename(self, meeting_id: str) -> Optional[str]:
         """Extract client name from meeting ID/filename"""
+        # Skip UUID-format meeting IDs (8-4-4-4-12 hex pattern)
+        uuid_pattern = r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+        if re.match(uuid_pattern, meeting_id.lower()):
+            return None
+
         # Remove common prefixes and suffixes
         clean_id = meeting_id.lower()
         clean_id = re.sub(r'^(auto-|meeting-|call-|transcript-)', '', clean_id)
@@ -362,9 +395,29 @@ class LLMScorer:
         if len(parts) >= 2:
             # Take first 1-2 parts as potential company name
             company_parts = parts[:2] if len(parts[1]) > 2 else parts[:1]
-            return ' '.join(company_parts).title()
+            candidate = ' '.join(company_parts).title()
+
+            # Validate: reject if looks like hex string (e.g., "Bcb88E78 88E8")
+            if self._is_hex_garbage(candidate):
+                return None
+
+            return candidate
 
         return None
+
+    def _is_hex_garbage(self, text: str) -> bool:
+        """Detect if text looks like hex garbage from UUID extraction"""
+        # Remove spaces and check if predominantly hex characters
+        cleaned = text.replace(' ', '').replace('-', '')
+        if len(cleaned) < 8:
+            return False
+
+        # Count hex-only characters vs total
+        hex_chars = sum(1 for c in cleaned if c.lower() in '0123456789abcdef')
+        ratio = hex_chars / len(cleaned)
+
+        # If >80% hex characters, likely garbage
+        return ratio > 0.8
 
     def _extract_client_with_llm(self, transcript: Transcript) -> ClientInfo:
         """Extract client information using LLM"""
@@ -631,31 +684,26 @@ Participants: {', '.join(transcript.participants)}
             return {"qualified": False, "reason": "JSON parse error", "summary": "Invalid response format", "evidence": None}
     
     def _check_now(self, context: str) -> SectionResult:
-        """Check for current state and immediate hiring needs"""
+        """Check for any hiring, talent, or growth-related discussion (no urgency required)"""
         prompt = """
-        Analyze this meeting transcript for the CLIENT company's CURRENT STATE and IMMEDIATE talent needs.
-        ONLY analyze "Them:" speakers (the client). IGNORE all "Me:" speakers (Unknown representative).
+        Analyze this CLIENT company's talent and growth situation.
+        ONLY analyze "Them:" speakers (the client). IGNORE "Me:" speakers (UNKNOWN rep).
 
-        What to look for (aligned with UNKNOWN Access products):
-        1. Current company scale (revenue, headcount, team structure)
-        2. Immediate hiring needs - especially for roles that "change where they're going"
-        3. Need for flexible talent model without compromising on quality (The Bench)
-        4. TA team struggling to access right talent (The Partnership)
-        5. Critical roles blocking growth or transformation
+        Qualify if you find ANY of:
+        - Hiring or talent needs (urgent OR distant OR vague)
+        - Team structure or organizational challenges
+        - Growth plans requiring people/skills
+        - Leadership gaps or capability building
+        - General workforce or resourcing discussion
 
-        Examples of NOW signals for UNKNOWN Access:
-        - "We need someone who can change our trajectory, not just fill a role"
-        - "Our TA team can't find the caliber of people we need"
-        - "Need exceptional freelance talent on tap"
-        - "Looking for people we didn't even know existed"
-        - "Critical senior hire blocking our next phase"
+        Do NOT require urgency or immediate needs. Accept fuzzy or exploratory language.
 
-        Return JSON with exactly these fields:
+        Return JSON:
         {
             "qualified": true or false,
-            "reason": "short explanation linking to UNKNOWN Access products if relevant",
-            "summary": "1-3 sentences about the CLIENT's current talent situation",
-            "evidence": "verbatim quote from 'Them:' speakers only, NEVER from 'Me:' speakers"
+            "reason": "short explanation of what signals you found",
+            "summary": "1-3 sentences about their talent/growth situation",
+            "evidence": "verbatim quote from 'Them:' speakers only"
         }
         """
 
@@ -670,33 +718,27 @@ Participants: {', '.join(transcript.participants)}
         )
     
     def _check_next(self, context: str) -> SectionResult:
-        """Check for future growth plans and vision"""
+        """Check for any future-oriented growth or transformation discussion"""
         prompt = """
-        Analyze this meeting transcript for the CLIENT company's FUTURE VISION and transformation needs.
-        ONLY analyze "Them:" speakers (the client). IGNORE all "Me:" speakers (Unknown representative).
+        Identify any FUTURE-ORIENTED thinking from this CLIENT company.
+        ONLY analyze "Them:" speakers (the client). IGNORE "Me:" speakers (UNKNOWN rep).
 
-        What to look for (aligned with UNKNOWN Transform & Ventures):
-        1. Vision of becoming something new (Transform: "what you're becoming")
-        2. Need to work ON the business model, not just IN the business
-        3. Plans for M&A, partnerships, or exits (Ventures)
-        4. Desire to build talent strategy for creative capital growth
-        5. Expansion plans requiring new operating models
+        Qualify if you find any discussion of:
+        - Future vision or where they want to go (clear OR vague)
+        - Transformation, change, or becoming something different
+        - Expansion plans, new markets, or scaling ambitions
+        - Organizational evolution or operating model shifts
+        - M&A exploration, partnerships, or exit planning
+        - Strategic planning or long-term positioning
 
-        Examples of NEXT signals for UNKNOWN Transform/Ventures:
-        - "We know what we want to become but not how to get there"
-        - "Need to redesign our org for where we're going"
-        - "Looking at acquisitions but unsure about valuation"
-        - "Want to build conditions for creativity to thrive"
-        - "Exploring partnerships to accelerate growth"
-        - "Need outside perspective on our talent strategy"
-        - "75% of acquisitions fail - we can't afford that"
+        Accept fuzzy future-thinking. Do NOT require concrete plans or timelines.
 
-        Return JSON with exactly these fields:
+        Return JSON:
         {
             "qualified": true or false,
-            "reason": "short explanation linking to Transform/Ventures products if relevant",
-            "summary": "1-3 sentences about the CLIENT's transformation journey",
-            "evidence": "verbatim quote from 'Them:' speakers only, NEVER from 'Me:' speakers"
+            "reason": "what future-oriented signals you identified",
+            "summary": "1-3 sentences about their future direction",
+            "evidence": "verbatim quote from 'Them:' speakers only"
         }
         """
 
@@ -711,23 +753,27 @@ Participants: {', '.join(transcript.participants)}
         )
     
     def _check_measure(self, context: str) -> SectionResult:
-        """Check for success metrics and measurement approach"""
+        """Check for any mention of desired outcomes or success (metrics not required)"""
         prompt = """
-        Analyze how this CLIENT company measures SUCCESS.
-        ONLY analyze "Them:" speakers (the client). IGNORE all "Me:" speakers (Unknown representative).
+        Identify how this CLIENT thinks about success or desired outcomes.
+        ONLY analyze "Them:" speakers (the client). IGNORE "Me:" speakers (UNKNOWN rep).
 
-        What to look for:
-        1. Financial: revenue/ARR, margin %, topline targets
-        2. Adoption/NPS: usage, adoption, NPS/eNPS
-        3. Operational: time-to-hire, cycle time, churn, retention
-        4. Timeframes: any target dates (SMART if present)
+        Qualify if you find ANY discussion of:
+        - Financial goals (revenue, margin, cost targets) - specific numbers NOT required
+        - Quality outcomes (better output, reputation, client satisfaction)
+        - Operational improvements (faster hiring, lower churn, efficiency gains)
+        - Growth aspirations (expansion, market share, team scaling)
+        - Qualitative goals (culture, creativity, innovation)
 
-        Return JSON with exactly these fields:
+        Do NOT require hard metrics. Accept aspirational language or directional goals.
+        Lack of specific numbers should NOT disqualify, especially for creative businesses.
+
+        Return JSON:
         {
             "qualified": true or false,
-            "reason": "short explanation for decision",
-            "summary": "1-3 sentences about the CLIENT (Them: speakers only)",
-            "evidence": "verbatim quote from 'Them:' speakers only, NEVER from 'Me:' speakers"
+            "reason": "what outcome or success signal you identified",
+            "summary": "1-3 sentences about how they define success",
+            "evidence": "verbatim quote from 'Them:' speakers only"
         }
         """
 
@@ -742,36 +788,27 @@ Participants: {', '.join(transcript.participants)}
         )
     
     def _check_blocker(self, context: str) -> SectionResult:
-        """Check for blockers preventing growth"""
+        """Check for any meaningful challenge or growth obstacle"""
         prompt = """
-        Identify the CLIENT company's biggest BLOCKERS that UNKNOWN can solve.
-        ONLY analyze "Them:" speakers (the client). IGNORE all "Me:" speakers (Unknown representative).
+        Identify ANY meaningful challenges or obstacles the CLIENT company faces.
+        ONLY analyze "Them:" speakers (the client). IGNORE "Me:" speakers (UNKNOWN rep).
 
-        Blockers aligned with UNKNOWN solutions:
-        1. ACCESS BLOCKERS:
-           - "Can't access talent we didn't know existed"
-           - "TA team lacks specialist support to find right people"
-           - "Need game-changing hires, not just role-fillers"
-           - "Talent compromises due to flexibility needs"
+        Qualify if you find any challenge related to:
+        - Talent access, quality, or retention
+        - Organizational structure or capability gaps
+        - Growth constraints or operational friction
+        - Strategic planning or transformation uncertainty
+        - Market access, partnerships, or M&A concerns
 
-        2. TRANSFORM BLOCKERS:
-           - "Working IN the business, can't work ON the business"
-           - "Don't know how to build for what we're becoming"
-           - "Lack talent strategy for creative capital growth"
-           - "No clear blueprint from current state to future state"
+        Do NOT limit to problems UNKNOWN explicitly solves today.
+        Accept any real challenge - solutions can be shaped over time.
 
-        3. VENTURES BLOCKERS:
-           - "Don't know how to value creative capital"
-           - "Fear of being in the 75% of failed acquisitions"
-           - "Need connections but don't want cattle-mart feeling"
-           - "Unsure of our worth to potential partners"
-
-        Return JSON with exactly these fields:
+        Return JSON:
         {
             "qualified": true or false,
-            "reason": "explain which UNKNOWN products could solve their blockers",
-            "summary": "1-3 sentences about blockers UNKNOWN can address",
-            "evidence": "verbatim quote from 'Them:' speakers only, NEVER from 'Me:' speakers"
+            "reason": "what challenges you identified",
+            "summary": "1-3 sentences describing their obstacles",
+            "evidence": "verbatim quote from 'Them:' speakers only"
         }
         """
 
@@ -858,35 +895,35 @@ Participants: {', '.join(transcript.participants)}
             }
 
     def _check_fit(self, context: str) -> FitResult:
-        """Check which UNKNOWN services match the company's needs"""
+        """Check for broad alignment with UNKNOWN's service areas (not specific products)"""
         prompt = """
-        Classify this CLIENT company's needs into UNKNOWN's 3 product categories.
-        ONLY analyze "Them:" speakers (the client). IGNORE all "Me:" speakers (Unknown representative).
+        Classify this CLIENT's needs into broad service alignment areas.
+        ONLY analyze "Them:" speakers (the client). IGNORE "Me:" speakers (UNKNOWN rep).
 
-        ACCESS (When you need the right people to deliver):
-        - The Search: Need someone to change trajectory, not just fill a role
-        - The Bench: Need exceptional freelance talent without compromising quality
-        - The Partnership: TA team needs specialist support to access right talent
-        Look for: "People we didn't know existed", "change where we're going", "on tap talent"
+        ACCESS - any talent-related needs:
+        - Hiring challenges (urgent or distant)
+        - Talent quality, access, or flexibility
+        - Leadership gaps or team building
 
-        TRANSFORM (When you need the right strategy to become more):
-        - Transform Workshop: Know what to become but not how to get there
-        - Shape of You: Need to change but can't put finger on what
-        - Partnership+: Have transformation goals but lack skills to deliver
-        Look for: "Work ON not IN business", "talent success model", "creative capital"
+        TRANSFORM - any strategic/organizational needs:
+        - Organizational structure or capability issues
+        - Growth strategy or transformation planning
+        - Operating model changes or scaling challenges
 
-        VENTURES (When you need the right partnerships for step-change):
-        - Fake or Fortune (Buy): M&A deal completion and valuation
-        - The Closer (Buy): Finding acquisition targets that fit
-        - The Intro (Sell): Finding partners who truly get your value
-        Look for: "Value creative capital", "75% acquisitions fail", "exit planning"
+        VENTURES - any partnership/M&A needs:
+        - M&A exploration or partnership seeking
+        - Valuation or exit planning discussions
+        - Market expansion through acquisition
 
-        Return STRICT JSON with exactly these fields:
+        Do NOT require specific product matches. General alignment is sufficient.
+        Qualify if ANY of these areas are relevant (even vaguely).
+
+        Return JSON:
         {
             "qualified": true or false,
-            "reason": "explain which specific UNKNOWN products match their needs",
-            "summary": "1–3 sentences mapping needs to UNKNOWN products",
-            "services": ["Access","Transform","Ventures"],   // choose 1–3; Title Case
+            "reason": "which areas align and why",
+            "summary": "1-3 sentences about their needs",
+            "services": ["Access","Transform","Ventures"],
             "evidence": "verbatim <= 25 words from 'Them:' speakers only"
         }
         """

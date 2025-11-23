@@ -462,6 +462,457 @@ def compare_models(
     console.print(f"\n[bold green]Model comparison completed![/bold green]")
 
 
+@app.command()
+def fix_client_names(
+    dry_run: bool = typer.Option(True, "--dry-run/--execute", help="Preview changes without applying them"),
+    use_file: bool = typer.Option(False, "--use-file", help="Use client_mappings.json instead of BigQuery table")
+):
+    """Fix corrupted and duplicate client names in BigQuery using mappings from BigQuery table."""
+
+    loader = BigQueryLoader()
+
+    # Load mappings from BigQuery or file
+    if use_file:
+        mappings_file = Path("client_mappings.json")
+        if not mappings_file.exists():
+            console.print(f"[red]Error: Mappings file {mappings_file} does not exist[/red]")
+            raise typer.Exit(1)
+
+        with open(mappings_file) as f:
+            config = json.load(f)
+            mappings = config.get("mappings", {})
+        console.print(f"[blue]Loaded {len(mappings)} client name mappings from file[/blue]")
+    else:
+        mappings = loader.load_client_mappings()
+
+    if not mappings:
+        console.print("[yellow]No mappings found. Add mappings using 'add-client-mapping' command[/yellow]")
+        return
+
+    table_id = f"{loader.project_id}.{loader.dataset_name}.{loader.new_table_name}"
+
+    # Find records that need fixing
+    # Escape single quotes for SQL
+    escaped_variants = [k.replace("'", "\\'") for k in mappings.keys()]
+    variant_list = "', '".join(escaped_variants)
+    query = f"""
+    SELECT
+        meeting_id,
+        JSON_VALUE(client_info, '$.client') as current_client
+    FROM `{table_id}`
+    WHERE JSON_VALUE(client_info, '$.client') IN ('{variant_list}')
+    """
+
+    console.print(f"[yellow]Searching for records to fix...[/yellow]")
+    results = loader.client.query(query).result()
+    records = list(results)
+
+    if not records:
+        console.print("[green]No records need fixing![/green]")
+        return
+
+    # Show what will be changed
+    change_table = Table(title=f"Client Name Changes {'(DRY RUN)' if dry_run else ''}")
+    change_table.add_column("Meeting ID", style="cyan", max_width=40)
+    change_table.add_column("Current Name", style="yellow")
+    change_table.add_column("→", style="white")
+    change_table.add_column("New Name", style="green")
+
+    for record in records:
+        current = record.current_client
+        new_name = mappings.get(current, current)
+        change_table.add_row(
+            record.meeting_id[:37] + "..." if len(record.meeting_id) > 40 else record.meeting_id,
+            current,
+            "→",
+            new_name
+        )
+
+    console.print(change_table)
+    console.print(f"\n[bold]Total records to update: {len(records)}[/bold]")
+
+    if dry_run:
+        console.print(f"\n[yellow]DRY RUN - No changes made[/yellow]")
+        console.print(f"[blue]Run with --execute to apply changes[/blue]")
+        return
+
+    # Apply updates
+    console.print(f"\n[yellow]Applying updates to BigQuery...[/yellow]")
+
+    for record in track(records, description="Updating records..."):
+        current = record.current_client
+        new_name = mappings.get(current, current)
+        meeting_id = record.meeting_id
+
+        # Update the client name in client_info JSON
+        update_query = f"""
+        UPDATE `{table_id}`
+        SET client_info = JSON_SET(client_info, '$.client', '{new_name}')
+        WHERE meeting_id = '{meeting_id}'
+        """
+
+        try:
+            loader.client.query(update_query).result()
+        except Exception as e:
+            console.print(f"[red]Failed to update {meeting_id}: {e}[/red]")
+
+    console.print(f"\n[bold green]Successfully updated {len(records)} records![/bold green]")
+
+
+@app.command()
+def list_clients(
+    limit: int = typer.Option(100, "--limit", "-n", help="Maximum number of clients to show"),
+    show_counts: bool = typer.Option(False, "--counts", "-c", help="Show meeting count per client")
+):
+    """List all unique client names from BigQuery."""
+
+    loader = BigQueryLoader()
+    table_id = f"{loader.project_id}.{loader.dataset_name}.{loader.new_table_name}"
+
+    if show_counts:
+        query = f"""
+        SELECT
+            JSON_VALUE(client_info, '$.client') as client,
+            COUNT(*) as meeting_count
+        FROM `{table_id}`
+        WHERE JSON_VALUE(client_info, '$.client') IS NOT NULL
+        GROUP BY client
+        ORDER BY meeting_count DESC, client
+        LIMIT {limit}
+        """
+    else:
+        query = f"""
+        SELECT DISTINCT
+            JSON_VALUE(client_info, '$.client') as client
+        FROM `{table_id}`
+        WHERE JSON_VALUE(client_info, '$.client') IS NOT NULL
+        ORDER BY client
+        LIMIT {limit}
+        """
+
+    console.print(f"[yellow]Querying unique clients...[/yellow]")
+    results = loader.client.query(query).result()
+
+    if show_counts:
+        client_table = Table(title="Client Names with Meeting Counts")
+        client_table.add_column("Client", style="cyan")
+        client_table.add_column("Meetings", style="magenta", justify="right")
+
+        total_meetings = 0
+        for row in results:
+            client_table.add_row(row.client, str(row.meeting_count))
+            total_meetings += row.meeting_count
+
+        console.print(client_table)
+        console.print(f"\n[blue]Total unique clients: {results.total_rows}[/blue]")
+        console.print(f"[blue]Total meetings: {total_meetings}[/blue]")
+    else:
+        clients = [row.client for row in results]
+
+        for i, client in enumerate(clients, 1):
+            console.print(f"{i:3d}. {client}")
+
+        console.print(f"\n[blue]Total unique clients: {len(clients)}[/blue]")
+
+
+@app.command()
+def add_client_mapping(
+    variant: str = typer.Argument(..., help="Variant client name to map"),
+    canonical: str = typer.Argument(..., help="Canonical client name"),
+    notes: str = typer.Option(None, "--notes", "-n", help="Notes about this mapping")
+):
+    """Add or update a client name mapping in BigQuery."""
+
+    loader = BigQueryLoader()
+    success = loader.add_client_mapping(variant, canonical, notes)
+
+    if not success:
+        raise typer.Exit(1)
+
+
+@app.command()
+def delete_client_mapping(
+    variant: str = typer.Argument(..., help="Variant client name to delete")
+):
+    """Delete a client name mapping from BigQuery."""
+
+    loader = BigQueryLoader()
+    success = loader.delete_client_mapping(variant)
+
+    if not success:
+        raise typer.Exit(1)
+
+
+@app.command()
+def list_mappings():
+    """List all client name mappings from BigQuery."""
+
+    loader = BigQueryLoader()
+    mappings = loader.list_client_mappings()
+
+    if not mappings:
+        console.print("[yellow]No mappings found in BigQuery[/yellow]")
+        console.print("[blue]Use 'add-client-mapping' to add mappings[/blue]")
+        return
+
+    # Display mappings table
+    mapping_table = Table(title="Client Name Mappings")
+    mapping_table.add_column("Variant Name", style="yellow")
+    mapping_table.add_column("→", style="white")
+    mapping_table.add_column("Canonical Name", style="green")
+    mapping_table.add_column("Notes", style="blue")
+    mapping_table.add_column("Updated", style="cyan")
+
+    for mapping in mappings:
+        updated = mapping["updated_at"].strftime("%Y-%m-%d") if mapping.get("updated_at") else "Unknown"
+        mapping_table.add_row(
+            mapping["variant_name"],
+            "→",
+            mapping["canonical_name"],
+            mapping.get("notes") or "",
+            updated
+        )
+
+    console.print(mapping_table)
+    console.print(f"\n[blue]Total mappings: {len(mappings)}[/blue]")
+
+
+@app.command()
+def init_mappings(
+    from_file: bool = typer.Option(True, "--from-file/--empty", help="Initialize from client_mappings.json")
+):
+    """Initialize BigQuery mappings table (optionally from JSON file)."""
+
+    loader = BigQueryLoader()
+    loader.create_dataset_if_not_exists()
+    loader.create_mappings_table_if_not_exists()
+
+    if from_file:
+        mappings_file = Path("client_mappings.json")
+        if not mappings_file.exists():
+            console.print(f"[yellow]Mappings file {mappings_file} not found, skipping import[/yellow]")
+            return
+
+        with open(mappings_file) as f:
+            config = json.load(f)
+            mappings = config.get("mappings", {})
+
+        console.print(f"[blue]Importing {len(mappings)} mappings from {mappings_file}...[/blue]")
+
+        success_count = 0
+        for variant, canonical in track(mappings.items(), description="Importing mappings..."):
+            if loader.add_client_mapping(variant, canonical):
+                success_count += 1
+
+        console.print(f"\n[green]Successfully imported {success_count}/{len(mappings)} mappings[/green]")
+    else:
+        console.print("[green]Mappings table initialized (empty)[/green]")
+
+
+@app.command("rescore-compare")
+def rescore_compare(
+    limit: int = typer.Option(10, "--limit", "-n", help="Number of latest meetings to re-score"),
+    llm_model: str = typer.Option(os.getenv("DEFAULT_LLM_MODEL", "gpt-4o-mini"), "--model", help="LLM model to use"),
+    verbose: bool = typer.Option(False, "--verbose", "-v", help="Show detailed section-level changes")
+):
+    """Re-score latest meetings from BigQuery and compare old vs new scores."""
+
+    loader = BigQueryLoader()
+    table_id = f"{loader.project_id}.{loader.dataset_name}.{loader.new_table_name}"
+
+    # Fetch latest meetings with their transcript content and old scores
+    query = f"""
+    SELECT
+        meeting_id,
+        date,
+        JSON_VALUE(client_info, '$.client') as client,
+        participants,
+        enhanced_notes,
+        full_transcript,
+        total_qualified_sections as old_score,
+        now,
+        next,
+        measure,
+        blocker,
+        fit,
+        llm_model as old_model
+    FROM `{table_id}`
+    WHERE enhanced_notes IS NOT NULL OR full_transcript IS NOT NULL
+    ORDER BY date DESC
+    LIMIT {limit}
+    """
+
+    console.print(f"[blue]Fetching {limit} latest meetings from BigQuery...[/blue]")
+
+    try:
+        results = loader.client.query(query).result()
+        meetings = list(results)
+    except Exception as e:
+        console.print(f"[red]Failed to fetch meetings: {e}[/red]")
+        raise typer.Exit(1)
+
+    if not meetings:
+        console.print("[yellow]No meetings found with transcript content[/yellow]")
+        raise typer.Exit(1)
+
+    console.print(f"[green]Found {len(meetings)} meetings to re-score[/green]")
+
+    # Initialize scorer
+    try:
+        llm_scorer = LLMScorer(model=llm_model)
+    except ValueError as e:
+        console.print(f"[red]Error initializing LLM scorer: {e}[/red]")
+        raise typer.Exit(1)
+
+    # Re-score each meeting
+    from .schemas import Transcript, Note
+    from datetime import date as DateType
+
+    comparison_results = []
+
+    for meeting in track(meetings, description=f"Re-scoring with {llm_model}..."):
+        try:
+            # Reconstruct transcript from BQ data
+            meeting_date = meeting.date
+            if isinstance(meeting_date, str):
+                from datetime import datetime
+                meeting_date = datetime.strptime(meeting_date, "%Y-%m-%d").date()
+
+            transcript = Transcript(
+                meeting_id=meeting.meeting_id,
+                date=meeting_date,
+                company=meeting.client,
+                participants=meeting.participants or [],
+                desk="Unknown",
+                notes=[],
+                source="bigquery",
+                enhanced_notes=meeting.enhanced_notes,
+                full_transcript=meeting.full_transcript
+            )
+
+            # Score with new prompts
+            new_result = llm_scorer.score_transcript_new(transcript)
+
+            # Parse old section scores
+            old_now = meeting.now.get("qualified", False) if meeting.now else False
+            old_next = meeting.next.get("qualified", False) if meeting.next else False
+            old_measure = meeting.measure.get("qualified", False) if meeting.measure else False
+            old_blocker = meeting.blocker.get("qualified", False) if meeting.blocker else False
+            old_fit = meeting.fit.get("qualified", False) if meeting.fit else False
+
+            comparison_results.append({
+                "meeting_id": meeting.meeting_id,
+                "client": meeting.client or "Unknown",
+                "date": str(meeting.date),
+                "old_score": meeting.old_score,
+                "new_score": new_result.total_qualified_sections,
+                "delta": new_result.total_qualified_sections - meeting.old_score,
+                "old_qualified": meeting.old_score >= 3,
+                "new_qualified": new_result.qualified,
+                "old_model": meeting.old_model,
+                "sections": {
+                    "now": {"old": old_now, "new": new_result.now.qualified},
+                    "next": {"old": old_next, "new": new_result.next.qualified},
+                    "measure": {"old": old_measure, "new": new_result.measure.qualified},
+                    "blocker": {"old": old_blocker, "new": new_result.blocker.qualified},
+                    "fit": {"old": old_fit, "new": new_result.fit.qualified}
+                }
+            })
+
+        except Exception as e:
+            console.print(f"[red]Failed to score {meeting.meeting_id}: {e}[/red]")
+
+    if not comparison_results:
+        console.print("[red]No meetings were successfully re-scored[/red]")
+        raise typer.Exit(1)
+
+    # Display comparison table
+    comparison_table = Table(title=f"Score Comparison: Old vs New ({llm_model})")
+    comparison_table.add_column("Client", style="cyan", max_width=20)
+    comparison_table.add_column("Date", style="white")
+    comparison_table.add_column("Old", style="yellow", justify="center")
+    comparison_table.add_column("New", style="green", justify="center")
+    comparison_table.add_column("Δ", style="magenta", justify="center")
+    comparison_table.add_column("Status", style="blue")
+
+    for r in sorted(comparison_results, key=lambda x: x["delta"], reverse=True):
+        delta_str = f"+{r['delta']}" if r['delta'] > 0 else str(r['delta'])
+
+        # Status indicator
+        if not r["old_qualified"] and r["new_qualified"]:
+            status = "✓ Now qualified"
+        elif r["old_qualified"] and not r["new_qualified"]:
+            status = "✗ Lost qualification"
+        elif r["delta"] > 0:
+            status = "↑ Improved"
+        elif r["delta"] < 0:
+            status = "↓ Decreased"
+        else:
+            status = "= Same"
+
+        comparison_table.add_row(
+            r["client"][:20],
+            r["date"],
+            f"{r['old_score']}/5",
+            f"{r['new_score']}/5",
+            delta_str,
+            status
+        )
+
+    console.print(comparison_table)
+
+    # Summary stats
+    total = len(comparison_results)
+    improved = sum(1 for r in comparison_results if r["delta"] > 0)
+    decreased = sum(1 for r in comparison_results if r["delta"] < 0)
+    same = sum(1 for r in comparison_results if r["delta"] == 0)
+    newly_qualified = sum(1 for r in comparison_results if not r["old_qualified"] and r["new_qualified"])
+    lost_qualified = sum(1 for r in comparison_results if r["old_qualified"] and not r["new_qualified"])
+
+    old_avg = sum(r["old_score"] for r in comparison_results) / total
+    new_avg = sum(r["new_score"] for r in comparison_results) / total
+
+    console.print(f"\n[bold]Summary:[/bold]")
+    console.print(f"  Improved: {improved}/{total} ({improved/total*100:.0f}%)")
+    console.print(f"  Decreased: {decreased}/{total} ({decreased/total*100:.0f}%)")
+    console.print(f"  Same: {same}/{total} ({same/total*100:.0f}%)")
+    console.print(f"  Newly qualified: {newly_qualified}")
+    console.print(f"  Lost qualification: {lost_qualified}")
+    console.print(f"  Avg score: {old_avg:.1f} → {new_avg:.1f}")
+
+    # Verbose: show section-level changes
+    if verbose:
+        console.print(f"\n[bold]Section-Level Changes:[/bold]")
+
+        section_changes = {"now": 0, "next": 0, "measure": 0, "blocker": 0, "fit": 0}
+        section_gains = {"now": 0, "next": 0, "measure": 0, "blocker": 0, "fit": 0}
+
+        for r in comparison_results:
+            for section in section_changes.keys():
+                old_val = r["sections"][section]["old"]
+                new_val = r["sections"][section]["new"]
+                if old_val != new_val:
+                    section_changes[section] += 1
+                    if new_val and not old_val:
+                        section_gains[section] += 1
+
+        section_table = Table()
+        section_table.add_column("Section", style="cyan")
+        section_table.add_column("Changed", style="yellow", justify="center")
+        section_table.add_column("Gains", style="green", justify="center")
+
+        for section in section_changes.keys():
+            section_table.add_row(
+                section.upper(),
+                str(section_changes[section]),
+                f"+{section_gains[section]}"
+            )
+
+        console.print(section_table)
+
+    console.print(f"\n[bold green]Comparison completed![/bold green]")
+
+
 if __name__ == "__main__":
     app()
 else:

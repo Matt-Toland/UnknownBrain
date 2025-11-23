@@ -1,0 +1,111 @@
+{
+  "scoring_system": {
+    "total_possible": 5,
+    "qualified_threshold": 3,
+    "philosophy": "ERR ON INCLUSION - Surface a wide funnel of growth signals, not just crisp hiring briefs",
+    "response_format": {
+      "qualified": "boolean",
+      "reason": "string - short explanation",
+      "summary": "string - 1-3 sentences about client",
+      "evidence": "string - verbatim quote from client speakers only"
+    }
+  },
+  "criteria": {
+    "NOW": {
+      "name": "Talent & Growth Discussion",
+      "description": "ANY hiring, talent, or growth-related discussion (urgency NOT required)",
+      "qualified_when": [
+        "Any hiring or talent needs (urgent OR distant OR vague)",
+        "Team structure or organizational challenges",
+        "Growth plans requiring people/skills",
+        "Leadership gaps or capability building",
+        "General workforce or resourcing discussion"
+      ],
+      "guidance": "Do NOT require urgency. Accept fuzzy or exploratory language.",
+      "example_signals": "REMOVED - Accept both literal requirements and weaker/vaguer signals"
+    },
+    "NEXT": {
+      "name": "Future-Oriented Growth",
+      "description": "ANY future-oriented thinking or transformation discussion (concrete plans NOT required)",
+      "qualified_when": [
+        "Future vision or where they want to go (clear OR vague)",
+        "Transformation, change, or becoming something different",
+        "Expansion plans, new markets, or scaling ambitions",
+        "Organizational evolution or operating model shifts",
+        "M&A exploration, partnerships, or exit planning",
+        "Strategic planning or long-term positioning"
+      ],
+      "guidance": "Accept fuzzy future-thinking. Do NOT require concrete plans or timelines.",
+      "example_signals": "REMOVED - Accept both literal requirements and weaker/vaguer signals"
+    },
+    "MEASURE": {
+      "name": "Desired Outcomes & Success",
+      "description": "ANY discussion of desired outcomes or success (hard metrics NOT required)",
+      "qualified_when": [
+        "Financial goals (revenue, margin, cost targets) - specific numbers NOT required",
+        "Quality outcomes (better output, reputation, client satisfaction)",
+        "Operational improvements (faster hiring, lower churn, efficiency gains)",
+        "Growth aspirations (expansion, market share, team scaling)",
+        "Qualitative goals (culture, creativity, innovation)"
+      ],
+      "guidance": "Do NOT require hard metrics. Accept aspirational language or directional goals. Lack of specific numbers should NOT disqualify, especially for creative businesses.",
+      "example_signals": "REMOVED - Accept both quantitative metrics and qualitative aspirations"
+    },
+    "BLOCKER": {
+      "name": "Meaningful Challenges",
+      "description": "ANY meaningful challenge or growth obstacle (UNKNOWN solution NOT required)",
+      "qualified_when": [
+        "Talent access, quality, or retention challenges",
+        "Organizational structure or capability gaps",
+        "Growth constraints or operational friction",
+        "Strategic planning or transformation uncertainty",
+        "Market access, partnerships, or M&A concerns"
+      ],
+      "guidance": "Do NOT limit to problems UNKNOWN explicitly solves today. Accept any real challenge - solutions can be shaped over time.",
+      "example_signals": "REMOVED - Accept both crisp blockers and vague challenges"
+    },
+    "FIT": {
+      "name": "UNKNOWN Service Alignment",
+      "description": "Broad alignment with UNKNOWN service areas (specific product match NOT required)",
+      "response_format": {
+        "qualified": "boolean",
+        "reason": "string - which areas align and why",
+        "summary": "string - 1-3 sentences about their needs",
+        "services": "array - ['Access', 'Transform', 'Ventures'] - choose 1-3",
+        "evidence": "string - verbatim quote <= 25 words from client only"
+      },
+      "categories": {
+        "Access": {
+          "description": "ANY talent-related needs",
+          "includes": [
+            "Hiring challenges (urgent or distant)",
+            "Talent quality, access, or flexibility",
+            "Leadership gaps or team building"
+          ]
+        },
+        "Transform": {
+          "description": "ANY strategic/organizational needs",
+          "includes": [
+            "Organizational structure or capability issues",
+            "Growth strategy or transformation planning",
+            "Operating model changes or scaling challenges"
+          ]
+        },
+        "Ventures": {
+          "description": "ANY partnership/M&A needs",
+          "includes": [
+            "M&A exploration or partnership seeking",
+            "Valuation or exit planning discussions",
+            "Market expansion through acquisition"
+          ]
+        }
+      },
+      "guidance": "Do NOT require specific product matches. General alignment is sufficient. Qualify if ANY of these areas are relevant (even vaguely)."
+    }
+  },
+  "important_rules": {
+    "speaker_analysis": "ONLY analyze 'Them:' speakers (the client). IGNORE all 'Me:' speakers (UNKNOWN representative)",
+    "evidence_requirements": "Evidence must be verbatim quotes from client speakers only, NEVER from UNKNOWN rep",
+    "fit_evidence_limit": "FIT evidence must be <= 25 words"
+  }
+}
