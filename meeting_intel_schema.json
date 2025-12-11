@@ -1,0 +1,188 @@
+[
+  {
+    "name": "meeting_id",
+    "type": "STRING",
+    "mode": "REQUIRED",
+    "description": "Unique meeting identifier"
+  },
+  {
+    "name": "date",
+    "type": "DATE",
+    "mode": "REQUIRED",
+    "description": "Meeting date"
+  },
+  {
+    "name": "participants",
+    "type": "STRING",
+    "mode": "REPEATED",
+    "description": "List of participants"
+  },
+  {
+    "name": "desk",
+    "type": "STRING",
+    "mode": "NULLABLE",
+    "description": "Business category"
+  },
+  {
+    "name": "source",
+    "type": "STRING",
+    "mode": "REQUIRED",
+    "description": "Source of transcript"
+  },
+  {
+    "name": "client_info",
+    "type": "JSON",
+    "mode": "REQUIRED",
+    "description": "Client information as JSON blob"
+  },
+  {
+    "name": "granola_note_id",
+    "type": "STRING",
+    "mode": "NULLABLE",
+    "description": null
+  },
+  {
+    "name": "title",
+    "type": "STRING",
+    "mode": "NULLABLE",
+    "description": null
+  },
+  {
+    "name": "creator_name",
+    "type": "STRING",
+    "mode": "NULLABLE",
+    "description": null
+  },
+  {
+    "name": "creator_email",
+    "type": "STRING",
+    "mode": "NULLABLE",
+    "description": null
+  },
+  {
+    "name": "calendar_event_title",
+    "type": "STRING",
+    "mode": "NULLABLE",
+    "description": null
+  },
+  {
+    "name": "calendar_event_id",
+    "type": "STRING",
+    "mode": "NULLABLE",
+    "description": null
+  },
+  {
+    "name": "calendar_event_time",
+    "type": "TIMESTAMP",
+    "mode": "NULLABLE",
+    "description": null
+  },
+  {
+    "name": "granola_link",
+    "type": "STRING",
+    "mode": "NULLABLE",
+    "description": null
+  },
+  {
+    "name": "file_created_timestamp",
+    "type": "INTEGER",
+    "mode": "NULLABLE",
+    "description": null
+  },
+  {
+    "name": "zapier_step_id",
+    "type": "INTEGER",
+    "mode": "NULLABLE",
+    "description": null
+  },
+  {
+    "name": "enhanced_notes",
+    "type": "STRING",
+    "mode": "NULLABLE",
+    "description": null
+  },
+  {
+    "name": "my_notes",
+    "type": "STRING",
+    "mode": "NULLABLE",
+    "description": null
+  },
+  {
+    "name": "full_transcript",
+    "type": "STRING",
+    "mode": "NULLABLE",
+    "description": null
+  },
+  {
+    "name": "total_qualified_sections",
+    "type": "INTEGER",
+    "mode": "REQUIRED",
+    "description": "Total qualified sections (0-5)"
+  },
+  {
+    "name": "qualified",
+    "type": "BOOLEAN",
+    "mode": "REQUIRED",
+    "description": "True if meets threshold"
+  },
+  {
+    "name": "now",
+    "type": "JSON",
+    "mode": "REQUIRED",
+    "description": "NOW scoring as JSON blob"
+  },
+  {
+    "name": "next",
+    "type": "JSON",
+    "mode": "REQUIRED",
+    "description": "NEXT scoring as JSON blob"
+  },
+  {
+    "name": "measure",
+    "type": "JSON",
+    "mode": "REQUIRED",
+    "description": "MEASURE scoring as JSON blob"
+  },
+  {
+    "name": "blocker",
+    "type": "JSON",
+    "mode": "REQUIRED",
+    "description": "BLOCKER scoring as JSON blob"
+  },
+  {
+    "name": "fit",
+    "type": "JSON",
+    "mode": "REQUIRED",
+    "description": "FIT scoring as JSON blob"
+  },
+  {
+    "name": "scored_at",
+    "type": "TIMESTAMP",
+    "mode": "REQUIRED",
+    "description": null
+  },
+  {
+    "name": "llm_model",
+    "type": "STRING",
+    "mode": "REQUIRED",
+    "description": null
+  },
+  {
+    "name": "challenges",
+    "type": "STRING",
+    "mode": "REPEATED",
+    "description": null
+  },
+  {
+    "name": "results",
+    "type": "STRING",
+    "mode": "REPEATED",
+    "description": null
+  },
+  {
+    "name": "offering",
+    "type": "STRING",
+    "mode": "NULLABLE",
+    "description": null
+  }
+]

@@ -21,6 +21,9 @@ python -m src.cli ingest
 # Score transcripts using LLM (default: gpt-5-mini)
 python -m src.cli score --bq-export
 
+# Score with salesperson assessment (8 additional criteria)
+python -m src.cli score --include-sales-assessment --bq-export
+
 # Use specific LLM model
 python -m src.cli score --model gpt-4o-mini
 python -m src.cli score --model gpt-5-mini
@@ -30,7 +33,10 @@ python -m src.cli score --model gpt-5
 python -m src.cli compare-models --models gpt-5-mini,gpt-4o-mini --verbose
 
 # Upload scored data to BigQuery
-python -m src.cli upload-bq
+python -m src.cli upload-bq-merge
+
+# Migrate schema to add sales assessment columns (one-time)
+python -m src.cli migrate-sales-schema
 
 # Verbose output with detailed results
 python -m src.cli score -v
@@ -62,14 +68,36 @@ This is an LLM-powered transcript scoring system for UNKNOWN Brain that analyzes
 
 ### LLM Scoring System
 
-5 binary checks using GPT models (0-5 total score):
-1. **NOW**: Urgent hiring needs (≤60 days) 
+**Dual Scoring**: The system provides two independent assessments:
+
+#### 1. Opportunity Scoring (5 criteria, analyzes "Them:" - client)
+Binary checks using GPT models (0-5 total score):
+1. **NOW**: Urgent hiring needs (≤60 days)
 2. **NEXT**: Future opportunities (60-180 days)
 3. **MEASURE**: Clear success metrics/KPIs mentioned
 4. **BLOCKER**: Explicit obstacles/constraints
 5. **FIT**: Matches UNKNOWN services (Talent/Evolve/Ventures)
 
 **Qualified threshold**: ≥3/5 points
+
+#### 2. Salesperson Assessment (8 criteria, analyzes "Me:" - UNKNOWN rep)
+Granular 0-3 scoring per criterion (0-24 total score):
+1. **Introduction & Framing**: Did they set the tone and agenda?
+2. **Discovery**: Did they uncover problems and pain points?
+3. **Scoping**: Did they qualify budget, volumes, stakeholders?
+4. **Solution Positioning**: Did they match problems to UNKNOWN products?
+5. **Commercial Confidence**: Did they discuss fees credibly?
+6. **Case Studies**: Did they share relevant proof points?
+7. **Next Steps**: Did they close with clear actions?
+8. **Strategic Context**: Did they understand business direction?
+
+**Qualified threshold**: ≥5/8 criteria (score ≥2 each)
+**Performance ratings**: Excellent (20+), Good (16-19), Developing (12-15), Needs Improvement (<12)
+
+Each criterion includes:
+- Score (0-3): Not done / Weak / Adequate / Strong
+- Evidence: Verbatim quote from transcript
+- Coaching note: Specific improvement suggestion
 
 ### Data Model
 

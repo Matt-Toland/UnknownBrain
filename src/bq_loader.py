@@ -27,7 +27,10 @@ class BigQueryLoader:
 
         # New table for modern schema
         self.new_table_name = os.getenv('BQ_NEW_TABLE', 'meeting_intel')
-        
+
+        # Client mappings table
+        self.mappings_table_name = os.getenv('BQ_MAPPINGS_TABLE', 'client_mappings')
+
         # Initialize BigQuery client - use default credentials on Cloud Run
         if self.credentials_path.exists():
             os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = str(self.credentials_path.absolute())
@@ -110,14 +113,32 @@ class BigQueryLoader:
 
             # Processing metadata
             bigquery.SchemaField("scored_at", "TIMESTAMP", mode="REQUIRED"),
-            bigquery.SchemaField("llm_model", "STRING", mode="REQUIRED")
+            bigquery.SchemaField("llm_model", "STRING", mode="REQUIRED"),
+
+            # Salesperson Assessment Fields
+            bigquery.SchemaField("salesperson_name", "STRING", mode="NULLABLE", description="UNKNOWN rep name"),
+            bigquery.SchemaField("salesperson_email", "STRING", mode="NULLABLE", description="UNKNOWN rep email"),
+            bigquery.SchemaField("sales_total_score", "INTEGER", mode="NULLABLE", description="Total sales assessment score (0-24)"),
+            bigquery.SchemaField("sales_total_qualified", "INTEGER", mode="NULLABLE", description="Number of sales criteria qualified (0-8)"),
+            bigquery.SchemaField("sales_qualified", "BOOLEAN", mode="NULLABLE", description="True if sales assessment meets threshold"),
+            bigquery.SchemaField("sales_introduction", "JSON", mode="NULLABLE", description="Introduction & Framing assessment"),
+            bigquery.SchemaField("sales_discovery", "JSON", mode="NULLABLE", description="Discovery assessment"),
+            bigquery.SchemaField("sales_scoping", "JSON", mode="NULLABLE", description="Opportunity scoping assessment"),
+            bigquery.SchemaField("sales_solution", "JSON", mode="NULLABLE", description="Solution positioning assessment"),
+            bigquery.SchemaField("sales_commercial", "JSON", mode="NULLABLE", description="Commercial confidence assessment"),
+            bigquery.SchemaField("sales_case_studies", "JSON", mode="NULLABLE", description="Case studies assessment"),
+            bigquery.SchemaField("sales_next_steps", "JSON", mode="NULLABLE", description="Next steps assessment"),
+            bigquery.SchemaField("sales_strategic_context", "JSON", mode="NULLABLE", description="Strategic context assessment"),
+            bigquery.SchemaField("sales_strengths", "STRING", mode="REPEATED", description="Top strengths identified"),
+            bigquery.SchemaField("sales_improvements", "STRING", mode="REPEATED", description="Top improvement areas"),
+            bigquery.SchemaField("sales_overall_coaching", "STRING", mode="NULLABLE", description="Overall coaching note")
         ]
 
         table = bigquery.Table(table_id, schema=schema)
-        table.description = "UNKNOWN Brain meeting intelligence with JSON blob scoring"
+        table.description = "UNKNOWN Brain meeting intelligence with opportunity and sales assessment scoring"
 
         table = self.client.create_table(table, timeout=30)
-        console.print(f"[green]Created table {self.new_table_name} with JSON column types[/green]")
+        console.print(f"[green]Created table {self.new_table_name} with {len(schema)} columns (including sales assessment)[/green]")
     
     def merge_jsonl_data(self, jsonl_path: Path) -> int:
         """
@@ -297,7 +318,23 @@ class BigQueryLoader:
                 results = source.results,
                 offering = source.offering,
                 scored_at = source.scored_at,
-                llm_model = source.llm_model
+                llm_model = source.llm_model,
+                salesperson_name = source.salesperson_name,
+                salesperson_email = source.salesperson_email,
+                sales_total_score = source.sales_total_score,
+                sales_total_qualified = source.sales_total_qualified,
+                sales_qualified = source.sales_qualified,
+                sales_introduction = source.sales_introduction,
+                sales_discovery = source.sales_discovery,
+                sales_scoping = source.sales_scoping,
+                sales_solution = source.sales_solution,
+                sales_commercial = source.sales_commercial,
+                sales_case_studies = source.sales_case_studies,
+                sales_next_steps = source.sales_next_steps,
+                sales_strategic_context = source.sales_strategic_context,
+                sales_strengths = source.sales_strengths,
+                sales_improvements = source.sales_improvements,
+                sales_overall_coaching = source.sales_overall_coaching
         WHEN NOT MATCHED THEN
             INSERT ROW
         """
@@ -706,9 +743,9 @@ class BigQueryLoader:
             console.print(recent_table)
 
     def display_table_status(self) -> None:
-        """Display current table status"""
-        info = self.get_table_info()
-        
+        """Display current table status (checks new table)"""
+        info = self.get_new_table_info()
+
         if not info:
             console.print("[yellow]Table does not exist yet[/yellow]")
             return
@@ -747,6 +784,238 @@ class BigQueryLoader:
                 )
             
             console.print(recent_table)
+
+    def create_mappings_table_if_not_exists(self) -> None:
+        """Create client_mappings table if it doesn't exist"""
+        table_id = f"{self.project_id}.{self.dataset_name}.{self.mappings_table_name}"
+
+        try:
+            self.client.get_table(table_id)
+            console.print(f"[blue]Mappings table {self.mappings_table_name} already exists[/blue]")
+            return
+        except NotFound:
+            pass
+
+        # Define schema for mappings table
+        schema = [
+            bigquery.SchemaField("variant_name", "STRING", mode="REQUIRED", description="Client name variant"),
+            bigquery.SchemaField("canonical_name", "STRING", mode="REQUIRED", description="Canonical client name"),
+            bigquery.SchemaField("notes", "STRING", mode="NULLABLE", description="Mapping notes"),
+            bigquery.SchemaField("created_at", "TIMESTAMP", mode="NULLABLE", description="When mapping was created"),
+            bigquery.SchemaField("updated_at", "TIMESTAMP", mode="NULLABLE", description="When mapping was updated")
+        ]
+
+        table = bigquery.Table(table_id, schema=schema)
+        table.description = "Client name variant to canonical name mappings"
+
+        table = self.client.create_table(table, timeout=30)
+        console.print(f"[green]Created mappings table {self.mappings_table_name}[/green]")
+
+    def load_client_mappings(self) -> Dict[str, str]:
+        """
+        Load client name mappings from BigQuery
+
+        Returns:
+            Dict mapping variant_name -> canonical_name
+        """
+        table_id = f"{self.project_id}.{self.dataset_name}.{self.mappings_table_name}"
+
+        try:
+            query = f"""
+            SELECT variant_name, canonical_name
+            FROM `{table_id}`
+            ORDER BY variant_name
+            """
+
+            results = self.client.query(query).result()
+            mappings = {row.variant_name: row.canonical_name for row in results}
+
+            console.print(f"[blue]Loaded {len(mappings)} client mappings from BigQuery[/blue]")
+            return mappings
+
+        except NotFound:
+            console.print(f"[yellow]Mappings table not found, returning empty dict[/yellow]")
+            return {}
+        except Exception as e:
+            console.print(f"[red]Failed to load mappings: {e}[/red]")
+            return {}
+
+    def add_client_mapping(self, variant_name: str, canonical_name: str, notes: str = None) -> bool:
+        """
+        Add or update a client name mapping
+
+        Args:
+            variant_name: Variant client name
+            canonical_name: Canonical client name
+            notes: Optional notes about the mapping
+
+        Returns:
+            True if successful
+        """
+        self.create_dataset_if_not_exists()
+        self.create_mappings_table_if_not_exists()
+
+        table_id = f"{self.project_id}.{self.dataset_name}.{self.mappings_table_name}"
+
+        # Escape single quotes for SQL
+        variant_escaped = variant_name.replace("'", "\\'")
+        canonical_escaped = canonical_name.replace("'", "\\'")
+        notes_sql = f"'{notes.replace(chr(39), chr(92)+chr(39))}'" if notes else "CAST(NULL AS STRING)"
+
+        merge_query = f"""
+        MERGE `{table_id}` AS target
+        USING (SELECT
+            '{variant_escaped}' AS variant_name,
+            '{canonical_escaped}' AS canonical_name,
+            {notes_sql} AS notes,
+            CURRENT_TIMESTAMP() AS updated_at
+        ) AS source
+        ON target.variant_name = source.variant_name
+        WHEN MATCHED THEN
+            UPDATE SET
+                canonical_name = source.canonical_name,
+                notes = source.notes,
+                updated_at = source.updated_at
+        WHEN NOT MATCHED THEN
+            INSERT (variant_name, canonical_name, notes, created_at, updated_at)
+            VALUES (source.variant_name, source.canonical_name, source.notes, CURRENT_TIMESTAMP(), source.updated_at)
+        """
+
+        try:
+            self.client.query(merge_query).result()
+            console.print(f"[green]Added/updated mapping: '{variant_name}' → '{canonical_name}'[/green]")
+            return True
+        except Exception as e:
+            console.print(f"[red]Failed to add mapping: {e}[/red]")
+            return False
+
+    def delete_client_mapping(self, variant_name: str) -> bool:
+        """
+        Delete a client name mapping
+
+        Args:
+            variant_name: Variant client name to remove
+
+        Returns:
+            True if successful
+        """
+        table_id = f"{self.project_id}.{self.dataset_name}.{self.mappings_table_name}"
+
+        variant_escaped = variant_name.replace("'", "\\'")
+        delete_query = f"""
+        DELETE FROM `{table_id}`
+        WHERE variant_name = '{variant_escaped}'
+        """
+
+        try:
+            result = self.client.query(delete_query).result()
+            console.print(f"[green]Deleted mapping for '{variant_name}'[/green]")
+            return True
+        except Exception as e:
+            console.print(f"[red]Failed to delete mapping: {e}[/red]")
+            return False
+
+    def list_client_mappings(self) -> List[Dict[str, Any]]:
+        """
+        List all client name mappings
+
+        Returns:
+            List of mapping dictionaries
+        """
+        table_id = f"{self.project_id}.{self.dataset_name}.{self.mappings_table_name}"
+
+        try:
+            query = f"""
+            SELECT
+                variant_name,
+                canonical_name,
+                notes,
+                created_at,
+                updated_at
+            FROM `{table_id}`
+            ORDER BY variant_name
+            """
+
+            results = self.client.query(query).result()
+            return [dict(row) for row in results]
+
+        except NotFound:
+            console.print(f"[yellow]Mappings table not found[/yellow]")
+            return []
+        except Exception as e:
+            console.print(f"[red]Failed to list mappings: {e}[/red]")
+            return []
+
+    def add_sales_assessment_columns(self) -> bool:
+        """
+        Add sales assessment columns to existing meeting_intel table.
+
+        This is a migration method - run once to update existing table schema.
+        BigQuery allows adding NULLABLE columns to existing tables.
+
+        Returns:
+            True if successful, False otherwise
+        """
+        from google.cloud import bigquery
+
+        table_id = f"{self.project_id}.{self.dataset_name}.{self.new_table_name}"
+
+        # Define new sales assessment fields
+        SALES_ASSESSMENT_SCHEMA_FIELDS = [
+            bigquery.SchemaField("salesperson_name", "STRING", mode="NULLABLE", description="UNKNOWN rep name"),
+            bigquery.SchemaField("salesperson_email", "STRING", mode="NULLABLE", description="UNKNOWN rep email"),
+            bigquery.SchemaField("sales_total_score", "INTEGER", mode="NULLABLE", description="Total sales assessment score (0-24)"),
+            bigquery.SchemaField("sales_total_qualified", "INTEGER", mode="NULLABLE", description="Number of sales criteria qualified (0-8)"),
+            bigquery.SchemaField("sales_qualified", "BOOLEAN", mode="NULLABLE", description="True if sales assessment meets threshold"),
+            bigquery.SchemaField("sales_introduction", "JSON", mode="NULLABLE", description="Introduction & Framing assessment"),
+            bigquery.SchemaField("sales_discovery", "JSON", mode="NULLABLE", description="Discovery assessment"),
+            bigquery.SchemaField("sales_scoping", "JSON", mode="NULLABLE", description="Opportunity scoping assessment"),
+            bigquery.SchemaField("sales_solution", "JSON", mode="NULLABLE", description="Solution positioning assessment"),
+            bigquery.SchemaField("sales_commercial", "JSON", mode="NULLABLE", description="Commercial confidence assessment"),
+            bigquery.SchemaField("sales_case_studies", "JSON", mode="NULLABLE", description="Case studies assessment"),
+            bigquery.SchemaField("sales_next_steps", "JSON", mode="NULLABLE", description="Next steps assessment"),
+            bigquery.SchemaField("sales_strategic_context", "JSON", mode="NULLABLE", description="Strategic context assessment"),
+            bigquery.SchemaField("sales_strengths", "STRING", mode="REPEATED", description="Top strengths identified"),
+            bigquery.SchemaField("sales_improvements", "STRING", mode="REPEATED", description="Top improvement areas"),
+            bigquery.SchemaField("sales_overall_coaching", "STRING", mode="NULLABLE", description="Overall coaching note"),
+        ]
+
+        try:
+            # Get current table
+            table = self.client.get_table(table_id)
+            original_schema = list(table.schema)
+
+            # Check which columns already exist
+            existing_columns = {field.name for field in original_schema}
+
+            # Add new columns that don't exist yet
+            new_fields = []
+            for field in SALES_ASSESSMENT_SCHEMA_FIELDS:
+                if field.name not in existing_columns:
+                    new_fields.append(field)
+                    console.print(f"[blue]Adding column: {field.name}[/blue]")
+                else:
+                    console.print(f"[yellow]Column already exists: {field.name}[/yellow]")
+
+            if not new_fields:
+                console.print("[green]All sales assessment columns already exist[/green]")
+                return True
+
+            # Update schema
+            new_schema = original_schema + new_fields
+            table.schema = new_schema
+
+            # Apply the update
+            updated_table = self.client.update_table(table, ["schema"])
+
+            console.print(f"[green]Successfully added {len(new_fields)} new columns to {table_id}[/green]")
+            console.print(f"[blue]Total schema fields: {len(updated_table.schema)}[/blue]")
+
+            return True
+
+        except Exception as e:
+            console.print(f"[red]Failed to add sales assessment columns: {e}[/red]")
+            return False
 
 
 def upload_to_bigquery(jsonl_path: Path, write_disposition: str = "WRITE_APPEND") -> bool:

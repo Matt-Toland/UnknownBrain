@@ -93,13 +93,14 @@ def ingest(
     console.print(f"Output directory: {output_dir}")
 
 
-@app.command()  
+@app.command()
 def score(
     input_dir: Path = typer.Option(Path("data/json"), "--in", help="Input directory containing JSON files"),
     output_dir: Path = typer.Option(Path("out"), "--out", help="Output directory for score results"),
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Enable verbose output"),
     llm_model: str = typer.Option(os.getenv("DEFAULT_LLM_MODEL", "gpt-4o-mini"), "--model", help="LLM model to use"),
-    bq_export: bool = typer.Option(False, "--bq-export", help="Generate BigQuery JSONL export")
+    bq_export: bool = typer.Option(False, "--bq-export", help="Generate BigQuery JSONL export"),
+    include_sales_assessment: bool = typer.Option(False, "--include-sales-assessment", help="Include salesperson capability assessment (8 criteria)")
 ):
     """Score JSON transcripts using LLM and generate outputs."""
     
@@ -127,17 +128,36 @@ def score(
     # Load and score transcripts with LLM
     console.print(f"Loading and scoring {len(json_files)} transcripts with LLM ({llm_model})...")
     results = []
+    new_results = {}  # Store NewScoreResult format for BQ export
     transcripts = {}  # Store transcripts for BigQuery export
-    
-    for json_file in track(json_files, description="Scoring with LLM..."):
+    sales_results = {}  # Store sales assessments if enabled
+
+    scoring_desc = "Scoring with LLM (opportunity + sales)..." if include_sales_assessment else "Scoring with LLM..."
+
+    for json_file in track(json_files, description=scoring_desc):
         try:
             with open(json_file) as f:
                 data = json.load(f)
             from .schemas import Transcript
             transcript = Transcript(**data)
             transcripts[transcript.meeting_id] = transcript  # Store for BQ export
+
+            # Use new scoring format for BQ export
+            new_result = llm_scorer.score_transcript_new(transcript)
+            new_results[transcript.meeting_id] = new_result
+
+            # Also generate legacy format for backward compatibility with CSV/MD outputs
             result = llm_scorer.score_transcript(transcript)
             results.append(result)
+
+            # Run sales assessment if requested
+            if include_sales_assessment:
+                try:
+                    sales_result = llm_scorer.score_salesperson(transcript)
+                    sales_results[transcript.meeting_id] = sales_result
+                except Exception as sales_error:
+                    console.print(f"[yellow]Warning: Sales assessment failed for {json_file.name}: {sales_error}[/yellow]")
+
         except Exception as e:
             console.print(f"[red]Failed to score {json_file.name}: {e}[/red]")
     
@@ -159,7 +179,13 @@ def score(
     if bq_export:
         bq_output = output_dir / "bq_export.jsonl"
         console.print("Generating BigQuery JSONL export...")
-        generator.generate_bq_output(results, transcripts, bq_output, llm_model)
+        if include_sales_assessment and sales_results:
+            # Use new export method that includes sales assessment
+            console.print(f"[blue]Including sales assessment data for {len(sales_results)} meetings[/blue]")
+            generator.generate_bq_output_with_sales(transcripts, new_results, sales_results, bq_output)
+        else:
+            # Use legacy export (no sales data)
+            generator.generate_bq_output(results, transcripts, bq_output, llm_model)
     
     # Display summary table
     qualified_count = sum(1 for r in results if r.qualified)
@@ -175,19 +201,46 @@ def score(
     table.add_row("Average Score", f"{avg_score:.1f}/5")
     
     console.print(table)
-    
+
+    # Show sales assessment summary if enabled
+    if include_sales_assessment and sales_results:
+        sales_count = len(sales_results)
+        avg_sales_score = sum(s.total_score for s in sales_results.values()) / sales_count if sales_count else 0
+        sales_qualified_count = sum(1 for s in sales_results.values() if s.qualified)
+        sales_qualified_pct = (sales_qualified_count / sales_count) * 100 if sales_count else 0
+
+        sales_table = Table(title=f"Sales Assessment Summary ({llm_model})")
+        sales_table.add_column("Metric", style="cyan")
+        sales_table.add_column("Value", style="magenta")
+
+        sales_table.add_row("Meetings Assessed", str(sales_count))
+        sales_table.add_row("Qualified (≥5/8 criteria)", f"{sales_qualified_count} ({sales_qualified_pct:.1f}%)")
+        sales_table.add_row("Average Score", f"{avg_sales_score:.1f}/24")
+
+        console.print("\n")
+        console.print(sales_table)
+
     if verbose:
-        console.print(f"\n[bold]Top Scoring Meetings:[/bold]")
+        console.print(f"\n[bold]Top Scoring Meetings (Opportunity):[/bold]")
         sorted_results = sorted(results, key=lambda x: x.total_qualified_sections, reverse=True)
         for i, result in enumerate(sorted_results[:5], 1):
             console.print(f"{i}. {result.meeting_id} ({result.company or 'Unknown'}) - {result.total_qualified_sections}/5")
-    
+
+        if include_sales_assessment and sales_results:
+            console.print(f"\n[bold]Top Sales Performers:[/bold]")
+            sorted_sales = sorted(sales_results.values(), key=lambda x: x.total_score, reverse=True)
+            for i, sales_result in enumerate(sorted_sales[:5], 1):
+                performance_rating = sales_result.performance_rating
+                console.print(f"{i}. {sales_result.meeting_id} ({sales_result.salesperson_name or 'Unknown'}) - {sales_result.total_score}/24 ({performance_rating})")
+
     console.print(f"\n[bold green]Scoring completed![/bold green]")
     console.print(f"JSON output: {json_output}")
     console.print(f"CSV output: {csv_output}")
     console.print(f"Leaderboard: {markdown_output}")
     if bq_export:
         console.print(f"BigQuery export: {bq_output}")
+    if include_sales_assessment:
+        console.print(f"[blue]Sales assessment included for {len(sales_results)} meetings[/blue]")
 
 
 @app.command("upload-bq")
@@ -259,8 +312,8 @@ def upload_bq_merge(
         if show_status:
             console.print("\n[bold]Current Table Status:[/bold]")
             loader.display_table_status()
-        
-        rows_processed = loader.merge_jsonl_data(jsonl_file)
+
+        rows_processed = loader.merge_new_jsonl_data(jsonl_file)
         
         if rows_processed > 0:
             console.print(f"\n[green]Successfully processed {rows_processed} rows[/green]")
@@ -298,6 +351,29 @@ def dedupe_bq():
         
     except Exception as e:
         console.print(f"[red]Deduplication failed: {e}[/red]")
+        raise typer.Exit(1)
+
+
+@app.command("migrate-sales-schema")
+def migrate_sales_schema():
+    """Add sales assessment columns to existing meeting_intel table."""
+
+    try:
+        loader = BigQueryLoader()
+
+        console.print("\n[bold]Adding sales assessment columns to BigQuery table...[/bold]")
+
+        success = loader.add_sales_assessment_columns()
+
+        if success:
+            console.print("\n[bold green]Migration completed successfully![/bold green]")
+            console.print("[blue]You can now upload data with --include-sales-assessment flag[/blue]")
+        else:
+            console.print("\n[red]Migration failed[/red]")
+            raise typer.Exit(1)
+
+    except Exception as e:
+        console.print(f"[red]Migration failed: {e}[/red]")
         raise typer.Exit(1)
 
 

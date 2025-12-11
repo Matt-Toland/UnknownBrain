@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import List, Dict
 from datetime import date, datetime
 
-from .schemas import ScoreResult, Transcript, ScoredTranscript
+from .schemas import ScoreResult, Transcript, ScoredTranscript, NewScoredTranscript, SalesScoreResult
 
 
 class OutputGenerator:
@@ -192,6 +192,106 @@ class OutputGenerator:
                 json_line = json.dumps(scored.model_dump(mode='json'), default=self._json_serializer)
                 f.write(json_line + '\n')
     
+    def generate_bq_output_with_sales(self, transcripts: Dict[str, Transcript],
+                                      opportunity_results: Dict[str, any],
+                                      sales_results: Dict[str, SalesScoreResult],
+                                      output_path: Path):
+        """
+        Generate JSONL output for BigQuery import with both opportunity and sales assessment.
+
+        Args:
+            transcripts: Dict of meeting_id -> Transcript
+            opportunity_results: Dict of meeting_id -> opportunity scoring result
+            sales_results: Dict of meeting_id -> SalesScoreResult
+            output_path: Path to write JSONL file
+        """
+        from .schemas import NewScoreResult
+
+        jsonl_records = []
+
+        for meeting_id, transcript in transcripts.items():
+            # Get opportunity score (NewScoreResult format)
+            opp_result = opportunity_results.get(meeting_id)
+            if not opp_result:
+                continue
+
+            # Get sales result (may be None)
+            sales_result = sales_results.get(meeting_id)
+
+            # Build NewScoredTranscript with all fields
+            record_dict = {
+                # Core transcript fields
+                "meeting_id": transcript.meeting_id,
+                "date": transcript.date.isoformat() if isinstance(transcript.date, date) else transcript.date,
+                "participants": transcript.participants,
+                "desk": transcript.desk,
+                "source": transcript.source,
+
+                # Client info (as dict)
+                "client_info": opp_result.client_info.model_dump() if hasattr(opp_result, 'client_info') else {},
+
+                # Granola metadata
+                "granola_note_id": transcript.granola_note_id,
+                "title": transcript.title,
+                "creator_name": transcript.creator_name,
+                "creator_email": transcript.creator_email,
+                "calendar_event_title": transcript.calendar_event_title,
+                "calendar_event_id": transcript.calendar_event_id,
+                "calendar_event_time": transcript.calendar_event_time,
+                "granola_link": transcript.granola_link,
+                "file_created_timestamp": transcript.file_created_timestamp,
+                "zapier_step_id": transcript.zapier_step_id,
+
+                # Content sections
+                "enhanced_notes": transcript.enhanced_notes,
+                "my_notes": transcript.my_notes,
+                "full_transcript": transcript.full_transcript,
+
+                # Opportunity scoring results
+                "total_qualified_sections": opp_result.total_qualified_sections,
+                "qualified": opp_result.qualified,
+                "now": opp_result.now.model_dump() if hasattr(opp_result.now, 'model_dump') else opp_result.now,
+                "next": opp_result.next.model_dump() if hasattr(opp_result.next, 'model_dump') else opp_result.next,
+                "measure": opp_result.measure.model_dump() if hasattr(opp_result.measure, 'model_dump') else opp_result.measure,
+                "blocker": opp_result.blocker.model_dump() if hasattr(opp_result.blocker, 'model_dump') else opp_result.blocker,
+                "fit": opp_result.fit.model_dump() if hasattr(opp_result.fit, 'model_dump') else opp_result.fit,
+
+                # Client taxonomy
+                "challenges": opp_result.challenges if hasattr(opp_result, 'challenges') else [],
+                "results": opp_result.results if hasattr(opp_result, 'results') else [],
+                "offering": opp_result.offering if hasattr(opp_result, 'offering') else None,
+
+                # Processing metadata
+                "scored_at": opp_result.scored_at.isoformat() if isinstance(opp_result.scored_at, datetime) else opp_result.scored_at,
+                "llm_model": opp_result.llm_model,
+
+                # Sales assessment fields (nullable)
+                "salesperson_name": sales_result.salesperson_name if sales_result else transcript.creator_name,
+                "salesperson_email": sales_result.salesperson_email if sales_result else transcript.creator_email,
+                "sales_total_score": sales_result.total_score if sales_result else None,
+                "sales_total_qualified": sales_result.total_qualified if sales_result else None,
+                "sales_qualified": sales_result.qualified if sales_result else None,
+                "sales_introduction": sales_result.introduction.model_dump() if sales_result else None,
+                "sales_discovery": sales_result.discovery.model_dump() if sales_result else None,
+                "sales_scoping": sales_result.scoping.model_dump() if sales_result else None,
+                "sales_solution": sales_result.solution.model_dump() if sales_result else None,
+                "sales_commercial": sales_result.commercial.model_dump() if sales_result else None,
+                "sales_case_studies": sales_result.case_studies.model_dump() if sales_result else None,
+                "sales_next_steps": sales_result.next_steps.model_dump() if sales_result else None,
+                "sales_strategic_context": sales_result.strategic_context.model_dump() if sales_result else None,
+                "sales_strengths": sales_result.strengths if sales_result else [],
+                "sales_improvements": sales_result.improvements if sales_result else [],
+                "sales_overall_coaching": sales_result.overall_coaching if sales_result else None,
+            }
+
+            jsonl_records.append(record_dict)
+
+        # Write as JSONL
+        with open(output_path, 'w') as f:
+            for record in jsonl_records:
+                json_line = json.dumps(record, default=self._json_serializer)
+                f.write(json_line + '\n')
+
     def _json_serializer(self, obj):
         if isinstance(obj, (date, datetime)):
             return obj.isoformat()

@@ -1,0 +1,20 @@
+{
+  "description": "Manual client name mappings for deduplication and normalization",
+  "mappings": {
+    "Legas Delaney": "Leagas Delaney",
+    "Omnicom / DDB": "Omnicom",
+    "adam&eveDDB": "adam&eveDDB",
+    "Adam and Eve Recruitment": "Adam and Eve Recruitment",
+    "Sophia (creative agency within Atoms & Space group)": "Sophia",
+    "Media Arts Lab (Apple's advertising agency)": "Media Arts Lab",
+    "Your Studio (unnamed; referred to as \"your studio\" / founder's studio)": "Your Studio",
+    "25615A3D E4C9": "Unknown",
+    "Bcb88E78 88E8": "Unknown",
+    "D185Be63 81B0": "Unknown"
+  },
+  "notes": [
+    "Left side: variant name as it appears in database",
+    "Right side: canonical name to use",
+    "Add new mappings here as variants are discovered"
+  ]
+}

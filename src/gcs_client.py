@@ -5,6 +5,7 @@ Handles file operations in Cloud Storage for Cloud Run deployment
 
 import json
 import os
+import logging
 from typing import List, Optional, Dict, Any
 from pathlib import Path
 import tempfile
@@ -12,6 +13,8 @@ from datetime import datetime
 
 from google.cloud import storage
 from google.cloud.exceptions import NotFound
+
+logger = logging.getLogger(__name__)
 
 class GCSClient:
     """Client for Google Cloud Storage operations"""
@@ -91,7 +94,7 @@ class GCSClient:
             
             return temp_path
         except Exception as e:
-            print(f"Error downloading to temp file {blob_name}: {e}")
+            logger.error(f"Error downloading to temp file {blob_name}: {e}", exc_info=True)
             raise
     
     def upload_results(self, results: Dict[Any, Any], path: str) -> str:

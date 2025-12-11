@@ -556,7 +556,7 @@ async def process_pipeline(
         print(f"Successfully processed {meeting_id}")
         
     except Exception as e:
-        print(f"Error processing {meeting_id}: {e}")
+        logger.error(f"Error processing {meeting_id}: {e}", exc_info=True)
         processing_status[meeting_id].status = "failed"
         processing_status[meeting_id].error = str(e)
     
@@ -673,7 +673,7 @@ async def upload_new_format_to_bigquery(
             print(f"Failed to upload {meeting_id} to new meeting_intel table")
 
     except Exception as e:
-        print(f"Error uploading new format to BigQuery for {meeting_id}: {e}")
+        logger.error(f"Error uploading new format to BigQuery for {meeting_id}: {e}", exc_info=True)
 
 
 async def process_batch_pipeline(
