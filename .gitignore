@@ -33,6 +33,11 @@ data/transcripts/*
 !data/transcripts/.gitkeep
 data/json/*
 !data/json/.gitkeep
+data/json_batch*/
+data/json_staging/
+data/json_backfill/
+data/json_final/
+data/json_new_unscored/
 out/*
 !out/.gitkeep
 
@@ -49,6 +54,31 @@ temp/
 !CLAUDE.md
 !README.md
 !requirements.txt
+
+# Recovery and temporary scripts
+recovery_*
+execute_recovery.sh
+execute_final_recovery.sh
+*_recovery.py
+*_recovery.jsonl
+recovery_batches/
+analyze_missing_fields.py
+complete_recovery.py
+find_remaining_missing.py
+generate_recovery_sql.py
+generate_safe_recovery_sql.py
+final_field_recovery.jsonl
+final_recovery_with_python.py
+
+# Temporary export/test scripts
+export_test_meetings.py
+export_unscored_meetings.py
+export_final_unscored.py
+monitor_and_upload.py
+monitor_batch*.sh
+score_remaining.sh
+quick_check.sh
+detailed_coaching.sql
 
 # Temporary processing outputs
 latest_scores.json

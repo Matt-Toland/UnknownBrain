@@ -304,9 +304,10 @@ class BigQueryLoader:
                 granola_link = source.granola_link,
                 file_created_timestamp = source.file_created_timestamp,
                 zapier_step_id = source.zapier_step_id,
-                enhanced_notes = source.enhanced_notes,
-                my_notes = source.my_notes,
-                full_transcript = source.full_transcript,
+                -- Preserve existing text fields if source is NULL to prevent data loss
+                enhanced_notes = COALESCE(source.enhanced_notes, target.enhanced_notes),
+                my_notes = COALESCE(source.my_notes, target.my_notes),
+                full_transcript = COALESCE(source.full_transcript, target.full_transcript),
                 total_qualified_sections = source.total_qualified_sections,
                 qualified = source.qualified,
                 now = source.now,

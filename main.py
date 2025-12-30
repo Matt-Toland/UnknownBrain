@@ -540,13 +540,24 @@ async def process_pipeline(
         scorer = LLMScorer(model=scoring_model)
         new_score_result = scorer.score_transcript_new(transcript)
 
+        # 4.5 Add sales assessment scoring
+        sales_score_result = None
+        if os.getenv('ENABLE_SALES_SCORING', 'true').lower() == 'true':
+            try:
+                print(f"Performing sales assessment...")
+                sales_score_result = scorer.score_salesperson(transcript)
+                print(f"Sales assessment complete - Score: {sales_score_result.total_score}/24")
+            except Exception as e:
+                print(f"Sales scoring failed (non-fatal): {e}")
+                # Continue without sales data - this is not critical
+
         # 5. Cache the results using real meeting_id
         print("Caching results")
         gcs.cache_score(real_meeting_id, scoring_model, new_score_result.__dict__)
 
         # 6. Upload to meeting_intel BigQuery table
         print("Uploading to BigQuery")
-        await upload_new_format_to_bigquery(transcript, new_score_result, scoring_model, real_meeting_id, temp_files)
+        await upload_new_format_to_bigquery(transcript, new_score_result, sales_score_result, scoring_model, real_meeting_id, temp_files)
         
         # Update status with completion
         processing_status[meeting_id].status = "completed"
@@ -569,11 +580,12 @@ async def process_pipeline(
 async def upload_new_format_to_bigquery(
     transcript,
     new_score_result,
+    sales_score_result,
     model: str,
     meeting_id: str,
     temp_files: List[Path]
 ):
-    """Upload using new meeting_intel table format with JSON blobs"""
+    """Upload using new meeting_intel table format with JSON blobs and sales assessment"""
     try:
         # Use the provided score result directly (no re-scoring needed)
 
@@ -658,6 +670,47 @@ async def upload_new_format_to_bigquery(
             'scored_at': new_score_result.scored_at.isoformat(timespec='seconds'),
             'llm_model': new_score_result.llm_model
         }
+
+        # Add sales assessment fields if available (all nullable)
+        if sales_score_result:
+            new_bq_data.update({
+                'salesperson_name': sales_score_result.salesperson_name,
+                'salesperson_email': sales_score_result.salesperson_email,
+                'sales_total_score': sales_score_result.total_score,
+                'sales_total_qualified': sales_score_result.total_qualified,
+                'sales_qualified': sales_score_result.qualified,
+                'sales_introduction': sales_score_result.introduction.__dict__,
+                'sales_discovery': sales_score_result.discovery.__dict__,
+                'sales_scoping': sales_score_result.scoping.__dict__,
+                'sales_solution': sales_score_result.solution.__dict__,
+                'sales_commercial': sales_score_result.commercial.__dict__,
+                'sales_case_studies': sales_score_result.case_studies.__dict__,
+                'sales_next_steps': sales_score_result.next_steps.__dict__,
+                'sales_strategic_context': sales_score_result.strategic_context.__dict__,
+                'sales_strengths': sales_score_result.strengths,
+                'sales_improvements': sales_score_result.improvements,
+                'sales_overall_coaching': sales_score_result.overall_coaching
+            })
+        else:
+            # Add NULL values for sales fields when no sales assessment
+            new_bq_data.update({
+                'salesperson_name': None,
+                'salesperson_email': None,
+                'sales_total_score': None,
+                'sales_total_qualified': None,
+                'sales_qualified': None,
+                'sales_introduction': None,
+                'sales_discovery': None,
+                'sales_scoping': None,
+                'sales_solution': None,
+                'sales_commercial': None,
+                'sales_case_studies': None,
+                'sales_next_steps': None,
+                'sales_strategic_context': None,
+                'sales_strengths': None,
+                'sales_improvements': None,
+                'sales_overall_coaching': None
+            })
 
         # Upload to new BigQuery table using MERGE
         temp_new_jsonl_path = Path(f"/tmp/{meeting_id}_new.jsonl")
