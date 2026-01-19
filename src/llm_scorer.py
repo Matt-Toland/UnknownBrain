@@ -341,7 +341,16 @@ class LLMScorer:
         if llm_client.client and llm_client.client.strip():
             return llm_client
 
-        # Tier 2: Extract from filename (fallback)
+        # Tier 2: Extract from title first (more reliable than meeting_id for Granola)
+        if transcript.title:
+            title_client = self._extract_client_from_title(transcript.title)
+            if title_client and len(title_client) > 2:
+                return ClientInfo(
+                    client=title_client,
+                    source="title"
+                )
+
+        # Tier 3: Extract from meeting_id/filename (fallback)
         filename_client = self._extract_client_from_filename(transcript.meeting_id)
         if filename_client and len(filename_client) > 3 and not filename_client.lower().startswith(('auto', 'meeting', 'call')):
             return ClientInfo(
@@ -349,9 +358,54 @@ class LLMScorer:
                 source="filename"
             )
 
-        # Tier 3: Domain heuristics fallback
+        # Tier 4: Domain heuristics fallback
         domain_client = self._extract_client_from_domain(transcript)
         return domain_client
+
+    def _extract_client_from_title(self, title: str) -> Optional[str]:
+        """Extract client name from meeting title (e.g., 'Beyond x Unknown Bench' -> 'Beyond')"""
+        if not title:
+            return None
+
+        # Common patterns: "ClientName x Unknown", "Unknown x ClientName", "ClientName - Topic"
+        # Filter out Unknown/UNKNOWN and internal team names
+        unknown_terms = {'unknown', 'weareunknown', 'we are unknown', 'bench'}
+        internal_names = {'sam', 'matt', 'ollie', 'sean', 'ellie', 'molly', 'carrie', 'rick', 'josh'}
+        noise_words = {'connect', 'call', 'meeting', 'sync', 'chat', 'intro', 'catchup', 'catch-up'}
+
+        def clean_client_name(name: str) -> str:
+            """Remove trailing noise words from client name"""
+            words = name.split()
+            while words and words[-1].lower() in noise_words:
+                words.pop()
+            return ' '.join(words)
+
+        # Try "X x Y" pattern first - extract the non-Unknown party
+        x_pattern = re.match(r'^(.+?)\s+x\s+(.+?)(?:\s*[-–—]|$)', title, re.IGNORECASE)
+        if x_pattern:
+            part1, part2 = x_pattern.group(1).strip(), x_pattern.group(2).strip()
+            # Return the part that isn't Unknown
+            if part1.lower() not in unknown_terms and part1.lower() not in internal_names:
+                return clean_client_name(part1)
+            if part2.lower() not in unknown_terms and part2.lower() not in internal_names:
+                # Remove any trailing topic info
+                client = re.sub(r'\s*[-–—].*$', '', part2).strip()
+                return clean_client_name(client)
+
+        # Try "ClientName - Topic" pattern
+        dash_pattern = re.match(r'^(.+?)\s*[-–—]\s*(.+)$', title)
+        if dash_pattern:
+            potential_client = dash_pattern.group(1).strip()
+            if potential_client.lower() not in unknown_terms and potential_client.lower() not in internal_names:
+                return clean_client_name(potential_client)
+
+        # Fallback: first word if it looks like a company name
+        first_word = title.split()[0] if title.split() else None
+        if first_word and first_word.lower() not in unknown_terms and first_word.lower() not in internal_names:
+            if first_word[0].isupper() and len(first_word) > 2:
+                return first_word
+
+        return None
 
     def _extract_client_from_filename(self, meeting_id: str) -> Optional[str]:
         """Extract client name from meeting ID/filename"""
