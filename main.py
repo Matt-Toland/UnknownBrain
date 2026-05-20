@@ -536,7 +536,7 @@ async def process_pipeline(
         print(f"Using real meeting_id: {real_meeting_id} (was: {meeting_id})")
 
         # 3. Check cache with real meeting_id
-        cached_result = gcs.get_cached_score(real_meeting_id, scoring_model)
+        cached_result = gcs.get_cached_score(real_meeting_id, scoring_model, source)
         if cached_result:
             print(f"Using cached result for real meeting_id {real_meeting_id}")
             processing_status[meeting_id].status = "completed"
@@ -562,7 +562,7 @@ async def process_pipeline(
 
         # 5. Cache the results using real meeting_id
         print("Caching results")
-        gcs.cache_score(real_meeting_id, scoring_model, new_score_result.__dict__)
+        gcs.cache_score(real_meeting_id, scoring_model, source, new_score_result.__dict__)
 
         # 6. Upload to meeting_intel BigQuery table
         print("Uploading to BigQuery")
