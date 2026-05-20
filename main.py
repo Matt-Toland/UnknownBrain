@@ -677,7 +677,27 @@ async def upload_new_format_to_bigquery(
 
             # Processing metadata
             'scored_at': new_score_result.scored_at.isoformat(timespec='seconds'),
-            'llm_model': new_score_result.llm_model
+            'llm_model': new_score_result.llm_model,
+
+            # Routing — every row from this path is a client-scored transcript.
+            # Distinct from the top-level `source` (ingestion path) and from
+            # `client_info.domain` (client business sector).
+            'scoring_domain': 'client',
+
+            # Talent-specific buckets — NULL/empty on client rows. Populated by
+            # the TalentScorer in a future PR.
+            'talent_now': None,
+            'talent_triggers': [],
+            'talent_motivation': None,
+            'talent_market': None,
+            'talent_leads': None,
+            'talent_narrative': None,
+
+            # Per-client intelligence extensions — empty on client rows until
+            # the TalentScorer populates them.
+            'mentioned_companies': [],
+            'perception_themes': [],
+            'articulated_blockers': [],
         }
 
         # Add sales assessment fields if available (all nullable)

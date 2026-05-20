@@ -268,6 +268,27 @@ class NewScoredTranscript(BaseModel):
     sales_improvements: List[str] = Field(default_factory=list, description="Top improvement areas")
     sales_overall_coaching: Optional[str] = Field(None, description="Overall coaching note")
 
+    # === Routing ===
+    # Which scorer produced this row. Distinct from the top-level `source`
+    # (ingestion path) and from `client_info['domain']` (client business
+    # sector). Always 'client' on rows written by ClientScorer.
+    scoring_domain: Optional[str] = Field(None, description="'client' or 'talent' — which scorer ran")
+
+    # === Talent-specific scoring buckets ===
+    # NULL/empty on client rows. Populated by the TalentScorer in a future PR.
+    talent_now: Optional[Dict[str, Any]] = Field(None, description="Role/seniority/company snapshot (JSON)")
+    talent_triggers: List[str] = Field(default_factory=list, description="Trigger phrases / signals")
+    talent_motivation: Optional[Dict[str, Any]] = Field(None, description="Primary driver + description (JSON)")
+    talent_market: Optional[Dict[str, Any]] = Field(None, description="Comp, notice, openness, time-to-move (JSON)")
+    talent_leads: Optional[Dict[str, Any]] = Field(None, description="Companies mentioned + hiring signals (JSON)")
+    talent_narrative: Optional[str] = Field(None, description="Free-text talent narrative")
+
+    # === Per-client intelligence extensions ===
+    # Empty on client rows until the TalentScorer populates them.
+    mentioned_companies: List[Dict[str, Any]] = Field(default_factory=list, description="{name, type, sentiment, evidence_quote}")
+    perception_themes: List[Dict[str, Any]] = Field(default_factory=list, description="{company_name, theme, polarity, evidence_quote}")
+    articulated_blockers: List[Dict[str, Any]] = Field(default_factory=list, description="{company_name, category, evidence_quote}")
+
 
 # Legacy ScoredTranscript for backward compatibility
 class ScoredTranscript(BaseModel):
