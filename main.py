@@ -64,6 +64,7 @@ from src.scorers import ClientScorer
 from src.scoring import OutputGenerator
 from src.bq_loader import BigQueryLoader, upload_to_new_bigquery
 from src.gcs_client import GCSClient, get_gcs_client
+from src.router import resolve_source, get_scorer
 
 # Initialize FastAPI app
 app = FastAPI(
@@ -508,6 +509,14 @@ async def process_pipeline(
         # Use default model if not specified
         scoring_model = model or os.getenv("DEFAULT_LLM_MODEL", "gpt-5-mini")
 
+        # Resolve routing source from the GCS object's custom metadata.
+        # Defaults to "client" so transcripts uploaded before brain-uploader
+        # started setting the field continue to route correctly.
+        blob = gcs.bucket.blob(file_path)
+        blob.reload()
+        source = resolve_source(blob.metadata)
+        logger.info(f"Processing CloudEvent: object={file_path} source={source}")
+
         # 1. Download file from GCS
         print(f"Downloading {file_path} from bucket {bucket}")
         temp_file_path = gcs.download_to_temp_file(file_path)
@@ -537,7 +546,7 @@ async def process_pipeline(
 
         # 4. Score with LLM using new format
         print(f"Scoring with {scoring_model}")
-        scorer = ClientScorer(model=scoring_model)
+        scorer = get_scorer(source, model=scoring_model)
         new_score_result = scorer.score_transcript_new(transcript)
 
         # 4.5 Add sales assessment scoring
