@@ -41,6 +41,7 @@ steps:
       - '--min-instances=0'  # Scale to zero when not in use
       - '--concurrency=10'
       - '--port=8080'
+      - '--no-cpu-throttling'  # Required: scoring runs in FastAPI BackgroundTasks after response returns
       - '--set-env-vars=ENVIRONMENT=production'
       # Note: OPENAI_API_KEY should be set separately via gcloud or Cloud Console
 
