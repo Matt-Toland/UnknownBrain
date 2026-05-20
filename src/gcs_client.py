@@ -191,33 +191,24 @@ class GCSClient:
             print(f"Error getting metadata for {blob_name}: {e}")
             return None
     
-    def create_cache_key(self, meeting_id: str, model: str) -> str:
+    def create_cache_key(self, meeting_id: str, model: str, source: str) -> str:
         """
-        Create a cache key for scored results
-        
-        Args:
-            meeting_id: Meeting identifier
-            model: LLM model used for scoring
-            
-        Returns:
-            Cache key string
+        Create a cache key for scored results.
+
+        `source` is part of the key so that cache lookups for the same
+        meeting_id+model but different scorer domains (client vs talent)
+        don't collide. Without this, a client-scored result would be
+        silently returned for a talent re-run, bypassing the router.
         """
         today = datetime.now().strftime('%Y-%m-%d')
-        return f"cache/{today}/{meeting_id}-{model}.json"
-    
-    def get_cached_score(self, meeting_id: str, model: str) -> Optional[Dict[Any, Any]]:
+        return f"cache/{today}/{meeting_id}-{model}-{source}.json"
+
+    def get_cached_score(self, meeting_id: str, model: str, source: str) -> Optional[Dict[Any, Any]]:
         """
-        Get cached score results
-        
-        Args:
-            meeting_id: Meeting identifier
-            model: LLM model used
-            
-        Returns:
-            Cached results or None if not found
+        Get cached score results for the given meeting/model/source triple.
         """
-        cache_key = self.create_cache_key(meeting_id, model)
-        
+        cache_key = self.create_cache_key(meeting_id, model, source)
+
         try:
             if self.file_exists(cache_key):
                 content = self.download_transcript(cache_key)
@@ -226,29 +217,22 @@ class GCSClient:
         except Exception as e:
             print(f"Error getting cached score: {e}")
             return None
-    
-    def cache_score(self, meeting_id: str, model: str, results: Dict[Any, Any]) -> str:
+
+    def cache_score(self, meeting_id: str, model: str, source: str, results: Dict[Any, Any]) -> str:
         """
-        Cache score results
-        
-        Args:
-            meeting_id: Meeting identifier
-            model: LLM model used
-            results: Score results to cache
-            
-        Returns:
-            Cache file path
+        Cache score results under the meeting/model/source triple.
         """
-        cache_key = self.create_cache_key(meeting_id, model)
-        
+        cache_key = self.create_cache_key(meeting_id, model, source)
+
         # Add caching metadata
         cache_data = {
             'meeting_id': meeting_id,
             'model': model,
+            'source': source,
             'cached_at': datetime.now().isoformat(),
             'results': results
         }
-        
+
         return self.upload_results(cache_data, cache_key)
     
     def cleanup_temp_files(self, temp_paths: List[Path]):
