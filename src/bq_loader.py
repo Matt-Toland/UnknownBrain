@@ -131,7 +131,26 @@ class BigQueryLoader:
             bigquery.SchemaField("sales_strategic_context", "JSON", mode="NULLABLE", description="Strategic context assessment"),
             bigquery.SchemaField("sales_strengths", "STRING", mode="REPEATED", description="Top strengths identified"),
             bigquery.SchemaField("sales_improvements", "STRING", mode="REPEATED", description="Top improvement areas"),
-            bigquery.SchemaField("sales_overall_coaching", "STRING", mode="NULLABLE", description="Overall coaching note")
+            bigquery.SchemaField("sales_overall_coaching", "STRING", mode="NULLABLE", description="Overall coaching note"),
+
+            # Routing — which scorer produced this row. Distinct from the
+            # top-level `source` (ingestion path) and from `client_info.domain`
+            # (client business sector). See scripts/migrate_bq_add_talent_columns.py
+            # for the full disambiguation.
+            bigquery.SchemaField("scoring_domain", "STRING", mode="NULLABLE", description="'client' or 'talent' — which scorer ran"),
+
+            # Talent-specific scoring buckets (populated by TalentScorer in a future PR; NULL on client rows)
+            bigquery.SchemaField("talent_now", "JSON", mode="NULLABLE", description="Role/seniority/company snapshot"),
+            bigquery.SchemaField("talent_triggers", "STRING", mode="REPEATED", description="Trigger phrases / signals"),
+            bigquery.SchemaField("talent_motivation", "JSON", mode="NULLABLE", description="Primary driver + description"),
+            bigquery.SchemaField("talent_market", "JSON", mode="NULLABLE", description="Comp, notice, openness, time-to-move"),
+            bigquery.SchemaField("talent_leads", "JSON", mode="NULLABLE", description="Companies mentioned + hiring signals"),
+            bigquery.SchemaField("talent_narrative", "STRING", mode="NULLABLE", description="Free-text talent narrative"),
+
+            # Per-client intelligence extensions (populated by TalentScorer for talent transcripts; empty on client rows)
+            bigquery.SchemaField("mentioned_companies", "JSON", mode="REPEATED", description="{name, type, sentiment, evidence_quote}"),
+            bigquery.SchemaField("perception_themes", "JSON", mode="REPEATED", description="{company_name, theme, polarity, evidence_quote}"),
+            bigquery.SchemaField("articulated_blockers", "JSON", mode="REPEATED", description="{company_name, category, evidence_quote}"),
         ]
 
         table = bigquery.Table(table_id, schema=schema)
@@ -335,7 +354,20 @@ class BigQueryLoader:
                 sales_strategic_context = source.sales_strategic_context,
                 sales_strengths = source.sales_strengths,
                 sales_improvements = source.sales_improvements,
-                sales_overall_coaching = source.sales_overall_coaching
+                sales_overall_coaching = source.sales_overall_coaching,
+                -- Routing (added with talent-domain prep)
+                scoring_domain = source.scoring_domain,
+                -- Talent-specific scoring buckets (NULL on client rows until TalentScorer lands)
+                talent_now = source.talent_now,
+                talent_triggers = source.talent_triggers,
+                talent_motivation = source.talent_motivation,
+                talent_market = source.talent_market,
+                talent_leads = source.talent_leads,
+                talent_narrative = source.talent_narrative,
+                -- Per-client intelligence extensions (empty on client rows until TalentScorer lands)
+                mentioned_companies = source.mentioned_companies,
+                perception_themes = source.perception_themes,
+                articulated_blockers = source.articulated_blockers
         WHEN NOT MATCHED THEN
             INSERT ROW
         """
