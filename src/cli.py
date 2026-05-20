@@ -9,7 +9,7 @@ from rich.progress import track
 
 from .importers.plaintext import PlaintextImporter
 from .importers.granola_drive import GranolaDriveImporter
-from .llm_scorer import LLMScorer
+from .scorers import ClientScorer
 from .scoring import OutputGenerator
 from .bq_loader import BigQueryLoader
 
@@ -117,7 +117,7 @@ def score(
     
     # Initialize LLM scorer
     try:
-        llm_scorer = LLMScorer(model=llm_model)
+        llm_scorer = ClientScorer(model=llm_model)
     except ValueError as e:
         console.print(f"[red]Error initializing LLM scorer: {e}[/red]")
         console.print("[yellow]Make sure OPENAI_API_KEY is set in .env file[/yellow]")
@@ -410,7 +410,7 @@ def compare_models(
     
     for model in model_list:
         try:
-            scorer = LLMScorer(model=model)
+            scorer = ClientScorer(model=model)
             scorers[model] = scorer
             model_info[model] = scorer.get_model_info()
             console.print(f"✓ {model}: {model_info[model]['config'].get('description', 'Unknown')}")

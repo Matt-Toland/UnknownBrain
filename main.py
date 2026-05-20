@@ -60,7 +60,7 @@ def convert_to_utc_timestamp(timestamp_str) -> Optional[str]:
 # Import existing CLI functionality
 from src.importers.plaintext import PlaintextImporter
 from src.importers.granola_drive import GranolaDriveImporter
-from src.llm_scorer import LLMScorer
+from src.scorers import ClientScorer
 from src.scoring import OutputGenerator
 from src.bq_loader import BigQueryLoader, upload_to_new_bigquery
 from src.gcs_client import GCSClient, get_gcs_client
@@ -250,7 +250,7 @@ async def score_transcript(
         scoring_model = model or os.getenv("DEFAULT_LLM_MODEL", "gpt-5-mini")
         
         # Initialize scorer
-        scorer = LLMScorer(model=scoring_model)
+        scorer = ClientScorer(model=scoring_model)
         
         # TODO: Load transcript from storage and score it
         # For now, return simulated response
@@ -537,7 +537,7 @@ async def process_pipeline(
 
         # 4. Score with LLM using new format
         print(f"Scoring with {scoring_model}")
-        scorer = LLMScorer(model=scoring_model)
+        scorer = ClientScorer(model=scoring_model)
         new_score_result = scorer.score_transcript_new(transcript)
 
         # 4.5 Add sales assessment scoring

@@ -4,7 +4,7 @@ from typing import List, Dict, Any, Optional
 from dotenv import load_dotenv
 from openai import OpenAI
 
-from .schemas import (
+from ..schemas import (
     Transcript, Note, ScoreResult, FitResult, NewScoreResult, SectionResult, ClientInfo,
     SalesAssessmentResult, SalesScoreResult, SALES_ASSESSMENT_CRITERIA
 )
@@ -85,7 +85,7 @@ MODEL_CONFIGS = {
 }
 
 
-class LLMScorer:
+class ClientScorer:
     # FIT service aliases for backward compatibility
     FIT_ALIASES = {
         "talent": "Access",
