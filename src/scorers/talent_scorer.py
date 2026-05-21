@@ -30,6 +30,7 @@ from typing import Any, Dict, Optional
 from dotenv import load_dotenv
 from openai import OpenAI
 
+from ..cost_logger import log_llm_call
 from ..schemas import (
     Transcript,
     TalentScoringResult,
@@ -112,6 +113,9 @@ class TalentScorer:
     hit BigQuery; pass `client_mappings=` directly to skip the load
     (used by tests).
     """
+
+    # Identifies this scorer's writes in scoring_cost_log.
+    _scoring_domain = "talent"
 
     def __init__(
         self,
@@ -223,6 +227,14 @@ class TalentScorer:
             )
             parsed = response.choices[0].message.parsed
 
+        log_llm_call(
+            meeting_id=meeting_id,
+            scoring_domain=self._scoring_domain,
+            model=self.model,
+            prompt_label="talent_extraction",
+            response=response,
+        )
+
         if parsed is None:
             raise RuntimeError(
                 f"Pass 1 structured extraction returned no parsed output for meeting {meeting_id}"
@@ -256,6 +268,14 @@ class TalentScorer:
                 max_tokens=self.narrative_max_output_tokens,
             )
             text = (response.choices[0].message.content or "").strip()
+
+        log_llm_call(
+            meeting_id=meeting_id,
+            scoring_domain=self._scoring_domain,
+            model=self.model,
+            prompt_label="talent_narrative",
+            response=response,
+        )
 
         if not text:
             logger.warning(

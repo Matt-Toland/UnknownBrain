@@ -1,9 +1,11 @@
+import contextvars
 import os
 import json
 from typing import List, Dict, Any, Optional
 from dotenv import load_dotenv
 from openai import OpenAI
 
+from ..cost_logger import log_llm_call
 from ..schemas import (
     Transcript, Note, ScoreResult, FitResult, NewScoreResult, SectionResult, ClientInfo,
     SalesAssessmentResult, SalesScoreResult, SALES_ASSESSMENT_CRITERIA
@@ -12,6 +14,16 @@ import re
 
 # Load environment variables
 load_dotenv()
+
+
+# Prompt label for the current LLM call. Set by each _check_* / _extract_*
+# method, read by the API request methods just before they log the response
+# to scoring_cost_log. ContextVar (rather than instance attribute) keeps
+# things correct under any future concurrent scoring, and auto-inherits
+# across the retry-recursion chain in _process_response_content.
+_current_prompt_label: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
+    "client_scorer_prompt_label", default=None
+)
 
 
 # Model configuration profiles
@@ -86,6 +98,9 @@ MODEL_CONFIGS = {
 
 
 class ClientScorer:
+    # Identifies this scorer's writes in scoring_cost_log.
+    _scoring_domain = "client"
+
     # FIT service aliases for backward compatibility
     FIT_ALIASES = {
         "talent": "Access",
@@ -179,9 +194,13 @@ class ClientScorer:
 
         if not os.getenv("OPENAI_API_KEY"):
             raise ValueError("OPENAI_API_KEY environment variable not set")
-        
+
         # Get model configuration
         self.model_config = self._get_model_config()
+
+        # Updated at the top of each public scoring entry-point so the cost
+        # log can attribute every LLM call to the right meeting.
+        self._current_meeting_id: str = "unknown"
     
     def _get_model_config(self) -> Dict[str, Any]:
         """Get configuration for the current model"""
@@ -425,6 +444,7 @@ class ClientScorer:
 
     def _extract_client_with_llm(self, transcript: Transcript) -> ClientInfo:
         """Extract client information using LLM"""
+        _current_prompt_label.set("client_extraction")
         context = self._format_transcript(transcript)
 
         prompt = """
@@ -565,16 +585,24 @@ Participants: {', '.join(transcript.participants)}
                 text={"verbosity": "low"},       # Concise output
                 max_output_tokens=max_out
             )
-            
+
             content = response.output_text
-            
+
         except Exception as e:
             print(f"Responses API error: {e}")
             print(f"Model: {self.model}")
             return {"qualified": False, "reason": f"Responses API error: {str(e)}", "summary": "API request failed", "evidence": None}
-        
+
+        log_llm_call(
+            meeting_id=self._current_meeting_id,
+            scoring_domain=self._scoring_domain,
+            model=self.model,
+            prompt_label=_current_prompt_label.get(),
+            response=response,
+        )
+
         return self._process_response_content(content, retry_count, prompt, context)
-    
+
     def _make_o1_chat_request(self, prompt: str, context: str, retry_count: int = 0) -> Dict[str, Any]:
         """Make request using Chat Completions API for o1 models with special handling"""
         full_prompt = f"{prompt}\n\nTranscript:\n{context}\n\nPlease respond in JSON format."
@@ -598,14 +626,22 @@ Participants: {', '.join(transcript.participants)}
             
             response = self.client.chat.completions.create(**request_params)
             content = response.choices[0].message.content
-            
+
         except Exception as e:
             print(f"o1 Chat Completions API error: {e}")
             print(f"Model: {self.model}")
             return {"qualified": False, "reason": f"o1 Chat API error: {str(e)}", "summary": "API request failed", "evidence": None}
-        
+
+        log_llm_call(
+            meeting_id=self._current_meeting_id,
+            scoring_domain=self._scoring_domain,
+            model=self.model,
+            prompt_label=_current_prompt_label.get(),
+            response=response,
+        )
+
         return self._process_response_content(content, retry_count, prompt, context)
-    
+
     def _make_chat_completions_request(self, prompt: str, context: str, retry_count: int = 0) -> Dict[str, Any]:
         """Make request using Chat Completions API for GPT-4o models"""
         full_prompt = f"{prompt}\n\nTranscript:\n{context}\n\nPlease respond in JSON format."
@@ -630,12 +666,20 @@ Participants: {', '.join(transcript.participants)}
             
             response = self.client.chat.completions.create(**request_params)
             content = response.choices[0].message.content
-            
+
         except Exception as e:
             print(f"Chat Completions API error: {e}")
             print(f"Model: {self.model}")
             return {"qualified": False, "reason": f"Chat Completions API error: {str(e)}", "summary": "API request failed", "evidence": None}
-        
+
+        log_llm_call(
+            meeting_id=self._current_meeting_id,
+            scoring_domain=self._scoring_domain,
+            model=self.model,
+            prompt_label=_current_prompt_label.get(),
+            response=response,
+        )
+
         return self._process_response_content(content, retry_count, prompt, context)
     
     def _process_response_content(self, content: str, retry_count: int, prompt: str, context: str) -> Dict[str, Any]:
@@ -689,6 +733,7 @@ Participants: {', '.join(transcript.participants)}
     
     def _check_now(self, context: str) -> SectionResult:
         """Check for current state and immediate hiring needs"""
+        _current_prompt_label.set("opportunity_now")
         prompt = """
         Analyze this meeting transcript for the CLIENT company's CURRENT STATE and IMMEDIATE talent needs.
         ONLY analyze "Them:" speakers (the client). IGNORE all "Me:" speakers (Unknown representative).
@@ -728,6 +773,7 @@ Participants: {', '.join(transcript.participants)}
     
     def _check_next(self, context: str) -> SectionResult:
         """Check for future growth plans and vision"""
+        _current_prompt_label.set("opportunity_next")
         prompt = """
         Analyze this meeting transcript for the CLIENT company's FUTURE VISION and transformation needs.
         ONLY analyze "Them:" speakers (the client). IGNORE all "Me:" speakers (Unknown representative).
@@ -769,6 +815,7 @@ Participants: {', '.join(transcript.participants)}
     
     def _check_measure(self, context: str) -> SectionResult:
         """Check for success metrics and measurement approach"""
+        _current_prompt_label.set("opportunity_measure")
         prompt = """
         Analyze how this CLIENT company measures SUCCESS.
         ONLY analyze "Them:" speakers (the client). IGNORE all "Me:" speakers (Unknown representative).
@@ -800,6 +847,7 @@ Participants: {', '.join(transcript.participants)}
     
     def _check_blocker(self, context: str) -> SectionResult:
         """Check for blockers preventing growth"""
+        _current_prompt_label.set("opportunity_blocker")
         prompt = """
         Identify the CLIENT company's biggest BLOCKERS that UNKNOWN can solve.
         ONLY analyze "Them:" speakers (the client). IGNORE all "Me:" speakers (Unknown representative).
@@ -844,6 +892,7 @@ Participants: {', '.join(transcript.participants)}
     
     def _tag_taxonomy(self, context: str) -> Dict[str, Any]:
         """Tag meeting with client's controlled taxonomy vocabularies"""
+        _current_prompt_label.set("client_taxonomy")
         challenges_list = "\n".join(f"- {c}" for c in self.TAXONOMY_CHALLENGES)
         results_list = "\n".join(f"- {r}" for r in self.TAXONOMY_RESULTS)
         offerings_list = "\n".join(f"- {o}" for o in self.TAXONOMY_OFFERINGS)
@@ -916,6 +965,7 @@ Participants: {', '.join(transcript.participants)}
 
     def _check_fit(self, context: str) -> FitResult:
         """Check which UNKNOWN services match the company's needs"""
+        _current_prompt_label.set("opportunity_fit")
         prompt = """
         Classify this CLIENT company's needs into UNKNOWN's 3 product categories.
         ONLY analyze "Them:" speakers (the client). IGNORE all "Me:" speakers (Unknown representative).
@@ -1034,6 +1084,7 @@ Meeting Title: {transcript.title or transcript.calendar_event_title or 'Unknown'
 
     def _check_sales_introduction(self, context: str) -> Dict[str, Any]:
         """Assess introduction and framing"""
+        _current_prompt_label.set("sales_introduction")
         prompt = """
         Assess how well the UNKNOWN representative introduced themselves and framed the meeting.
         ONLY analyze "Me:" speakers (the UNKNOWN rep). IGNORE all "Them:" speakers (the client).
@@ -1064,6 +1115,7 @@ Meeting Title: {transcript.title or transcript.calendar_event_title or 'Unknown'
 
     def _check_sales_discovery(self, context: str) -> Dict[str, Any]:
         """Assess discovery of problems and pain"""
+        _current_prompt_label.set("sales_discovery")
         prompt = """
         Assess how well the UNKNOWN representative uncovered the client's problems and pain points.
         ONLY analyze "Me:" speakers (the UNKNOWN rep). IGNORE all "Them:" speakers (the client).
@@ -1096,6 +1148,7 @@ Meeting Title: {transcript.title or transcript.calendar_event_title or 'Unknown'
 
     def _check_sales_scoping(self, context: str) -> Dict[str, Any]:
         """Assess opportunity scoping and qualification"""
+        _current_prompt_label.set("sales_scoping")
         prompt = """
         Assess how well the UNKNOWN representative scoped and qualified the opportunity.
         ONLY analyze "Me:" speakers (the UNKNOWN rep). IGNORE all "Them:" speakers (the client).
@@ -1127,6 +1180,7 @@ Meeting Title: {transcript.title or transcript.calendar_event_title or 'Unknown'
 
     def _check_sales_solution(self, context: str) -> Dict[str, Any]:
         """Assess solution positioning"""
+        _current_prompt_label.set("sales_solution")
         prompt = """
         Assess how well the UNKNOWN representative positioned UNKNOWN's solution.
         ONLY analyze "Me:" speakers (the UNKNOWN rep). IGNORE all "Them:" speakers (the client).
@@ -1157,6 +1211,7 @@ Meeting Title: {transcript.title or transcript.calendar_event_title or 'Unknown'
 
     def _check_sales_commercial(self, context: str) -> Dict[str, Any]:
         """Assess commercial confidence"""
+        _current_prompt_label.set("sales_commercial")
         prompt = """
         Assess how confidently the UNKNOWN representative discussed commercials and fees.
         ONLY analyze "Me:" speakers (the UNKNOWN rep). IGNORE all "Them:" speakers (the client).
@@ -1187,6 +1242,7 @@ Meeting Title: {transcript.title or transcript.calendar_event_title or 'Unknown'
 
     def _check_sales_case_studies(self, context: str) -> Dict[str, Any]:
         """Assess use of case studies and proof points"""
+        _current_prompt_label.set("sales_case_studies")
         prompt = """
         Assess whether the UNKNOWN representative shared relevant case studies or proof points.
         ONLY analyze "Me:" speakers (the UNKNOWN rep). IGNORE all "Them:" speakers (the client).
@@ -1217,6 +1273,7 @@ Meeting Title: {transcript.title or transcript.calendar_event_title or 'Unknown'
 
     def _check_sales_next_steps(self, context: str) -> Dict[str, Any]:
         """Assess next steps and stakeholder mapping"""
+        _current_prompt_label.set("sales_next_steps")
         prompt = """
         Assess how well the UNKNOWN representative closed the meeting and agreed next steps.
         ONLY analyze "Me:" speakers (the UNKNOWN rep). IGNORE all "Them:" speakers (the client).
@@ -1248,6 +1305,7 @@ Meeting Title: {transcript.title or transcript.calendar_event_title or 'Unknown'
 
     def _check_sales_strategic_context(self, context: str) -> Dict[str, Any]:
         """Assess strategic context gathering"""
+        _current_prompt_label.set("sales_strategic_context")
         prompt = """
         Assess how well the UNKNOWN representative gathered strategic context about the client's business.
         ONLY analyze "Me:" speakers (the UNKNOWN rep). IGNORE all "Them:" speakers (the client).
@@ -1331,6 +1389,7 @@ Meeting Title: {transcript.title or transcript.calendar_event_title or 'Unknown'
         """
         from datetime import datetime, timezone
 
+        self._current_meeting_id = transcript.meeting_id
         context = self._format_transcript_for_sales(transcript)
 
         # Run all 8 sales assessments
@@ -1392,6 +1451,7 @@ Meeting Title: {transcript.title or transcript.calendar_event_title or 'Unknown'
         """Score a transcript using new JSON blob format"""
         from datetime import datetime, timezone
 
+        self._current_meeting_id = transcript.meeting_id
         context = self._format_transcript(transcript)
 
         # Extract client information first
@@ -1435,6 +1495,7 @@ Meeting Title: {transcript.title or transcript.calendar_event_title or 'Unknown'
 
     def score_transcript(self, transcript: Transcript) -> ScoreResult:
         """Score a transcript using LLM analysis (legacy format)"""
+        self._current_meeting_id = transcript.meeting_id
         context = self._format_transcript(transcript)
 
         # Run all scoring checks
