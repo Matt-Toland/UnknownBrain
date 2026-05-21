@@ -510,8 +510,11 @@ async def process_pipeline(
         scoring_model = model or os.getenv("DEFAULT_LLM_MODEL", "gpt-5-mini")
 
         # Resolve routing source from the GCS object's custom metadata.
-        # Defaults to "client" so transcripts uploaded before brain-uploader
-        # started setting the field continue to route correctly.
+        # Strict: resolve_source raises ValueError if metadata is missing,
+        # has no 'source' key, or has an empty value. brain-uploader sets
+        # source on every new upload, and historicals are backfilled (see
+        # scripts/backfill_unlabelled_client_blobs.py). Missing source now
+        # signals a real bug rather than legacy data.
         blob = gcs.bucket.blob(file_path)
         blob.reload()
         source = resolve_source(blob.metadata)

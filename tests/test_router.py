@@ -18,11 +18,14 @@ from src.router import resolve_source, get_scorer
 
 
 class TestResolveSource(unittest.TestCase):
-    def test_none_metadata_defaults_to_client(self):
-        self.assertEqual(resolve_source(None), "client")
+    def test_none_metadata_raises(self):
+        with self.assertRaises(ValueError) as ctx:
+            resolve_source(None)
+        self.assertIn("source", str(ctx.exception).lower())
 
-    def test_empty_metadata_defaults_to_client(self):
-        self.assertEqual(resolve_source({}), "client")
+    def test_empty_metadata_raises(self):
+        with self.assertRaises(ValueError):
+            resolve_source({})
 
     def test_explicit_client(self):
         self.assertEqual(resolve_source({"source": "client"}), "client")
@@ -30,17 +33,21 @@ class TestResolveSource(unittest.TestCase):
     def test_explicit_talent(self):
         self.assertEqual(resolve_source({"source": "talent"}), "talent")
 
-    def test_missing_source_key_defaults_to_client(self):
-        self.assertEqual(resolve_source({"other": "value"}), "client")
+    def test_missing_source_key_raises(self):
+        with self.assertRaises(ValueError):
+            resolve_source({"other": "value"})
 
-    def test_empty_string_value_defaults_to_client(self):
-        self.assertEqual(resolve_source({"source": ""}), "client")
+    def test_empty_string_value_raises(self):
+        with self.assertRaises(ValueError):
+            resolve_source({"source": ""})
 
-    def test_whitespace_only_value_defaults_to_client(self):
-        self.assertEqual(resolve_source({"source": "   "}), "client")
+    def test_whitespace_only_value_raises(self):
+        with self.assertRaises(ValueError):
+            resolve_source({"source": "   "})
 
-    def test_none_value_defaults_to_client(self):
-        self.assertEqual(resolve_source({"source": None}), "client")
+    def test_none_value_raises(self):
+        with self.assertRaises(ValueError):
+            resolve_source({"source": None})
 
     def test_value_is_stripped_and_lowercased(self):
         self.assertEqual(resolve_source({"source": "  CLIENT  "}), "client")
@@ -69,8 +76,8 @@ class TestGetScorer(unittest.TestCase):
         self.assertIn("garbage", str(ctx.exception))
 
     def test_empty_string_raises_value_error(self):
-        # Defensive — resolve_source defaults empties to "client", but if
-        # something else feeds get_scorer directly, an empty string is invalid.
+        # resolve_source already raises on empty input, but get_scorer is
+        # defensive too in case anything else feeds it directly.
         with self.assertRaises(ValueError):
             get_scorer("")
 
@@ -96,11 +103,11 @@ class TestCloudEventDispatch(unittest.TestCase):
         self.assertIs(scorer, mock_scorer_cls.return_value)
 
     @patch("src.router.ClientScorer")
-    def test_no_metadata_defaults_to_client_scorer(self, mock_scorer_cls):
+    def test_no_metadata_raises_and_never_instantiates_scorer(self, mock_scorer_cls):
         blob = self._blob(None)
-        scorer = get_scorer(resolve_source(blob.metadata), model="gpt-5-mini")
-        mock_scorer_cls.assert_called_once_with(model="gpt-5-mini")
-        self.assertIs(scorer, mock_scorer_cls.return_value)
+        with self.assertRaises(ValueError):
+            get_scorer(resolve_source(blob.metadata), model="gpt-5-mini")
+        mock_scorer_cls.assert_not_called()
 
     @patch("src.router.ClientScorer")
     def test_talent_metadata_raises_and_never_instantiates_scorer(self, mock_scorer_cls):
@@ -186,9 +193,12 @@ class TestProcessPipelineRoutingGuarantee(unittest.TestCase):
         status, mock_bq, mock_scorer_cls = self._run_pipeline({"source": "client"})
         mock_scorer_cls.assert_called_once()  # ClientScorer was instantiated
 
-    def test_no_metadata_defaults_to_client_and_reaches_scorer(self):
+    def test_no_metadata_fails_without_bigquery_write(self):
         status, mock_bq, mock_scorer_cls = self._run_pipeline(None)
-        mock_scorer_cls.assert_called_once()
+        self.assertEqual(status.status, "failed")
+        self.assertIn("source", (status.error or "").lower())
+        mock_bq.assert_not_called()
+        mock_scorer_cls.assert_not_called()
 
     def test_talent_source_fails_without_bigquery_write(self):
         status, mock_bq, mock_scorer_cls = self._run_pipeline({"source": "talent"})
