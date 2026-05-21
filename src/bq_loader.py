@@ -75,8 +75,10 @@ class BigQueryLoader:
             bigquery.SchemaField("desk", "STRING", mode="NULLABLE", description="Business category"),
             bigquery.SchemaField("source", "STRING", mode="REQUIRED", description="Source of transcript"),
 
-            # Enhanced client information as JSON
-            bigquery.SchemaField("client_info", "JSON", mode="REQUIRED", description="Client information as JSON blob"),
+            # Enhanced client information as JSON. NULLABLE since Brief 4 —
+            # talent rows leave it NULL; the relax-client-required-columns
+            # migration relaxed this in production.
+            bigquery.SchemaField("client_info", "JSON", mode="NULLABLE", description="Client information as JSON blob"),
 
             # Granola metadata fields
             bigquery.SchemaField("granola_note_id", "STRING", mode="NULLABLE"),
@@ -95,16 +97,18 @@ class BigQueryLoader:
             bigquery.SchemaField("my_notes", "STRING", mode="NULLABLE"),
             bigquery.SchemaField("full_transcript", "STRING", mode="NULLABLE"),
 
-            # Scoring results
-            bigquery.SchemaField("total_qualified_sections", "INTEGER", mode="REQUIRED", description="Total qualified sections (0-5)"),
-            bigquery.SchemaField("qualified", "BOOLEAN", mode="REQUIRED", description="True if meets threshold"),
+            # Client-domain scoring results. NULLABLE since Brief 4 — talent
+            # rows leave these NULL; the relax-client-required-columns
+            # migration relaxed them in production.
+            bigquery.SchemaField("total_qualified_sections", "INTEGER", mode="NULLABLE", description="Total qualified sections (0-5)"),
+            bigquery.SchemaField("qualified", "BOOLEAN", mode="NULLABLE", description="True if meets threshold"),
 
-            # JSON blob scoring sections
-            bigquery.SchemaField("now", "JSON", mode="REQUIRED", description="NOW scoring as JSON blob"),
-            bigquery.SchemaField("next", "JSON", mode="REQUIRED", description="NEXT scoring as JSON blob"),
-            bigquery.SchemaField("measure", "JSON", mode="REQUIRED", description="MEASURE scoring as JSON blob"),
-            bigquery.SchemaField("blocker", "JSON", mode="REQUIRED", description="BLOCKER scoring as JSON blob"),
-            bigquery.SchemaField("fit", "JSON", mode="REQUIRED", description="FIT scoring as JSON blob"),
+            # JSON blob scoring sections (client-domain, NULLABLE on talent rows)
+            bigquery.SchemaField("now", "JSON", mode="NULLABLE", description="NOW scoring as JSON blob"),
+            bigquery.SchemaField("next", "JSON", mode="NULLABLE", description="NEXT scoring as JSON blob"),
+            bigquery.SchemaField("measure", "JSON", mode="NULLABLE", description="MEASURE scoring as JSON blob"),
+            bigquery.SchemaField("blocker", "JSON", mode="NULLABLE", description="BLOCKER scoring as JSON blob"),
+            bigquery.SchemaField("fit", "JSON", mode="NULLABLE", description="FIT scoring as JSON blob"),
 
             # Client taxonomy tagging
             bigquery.SchemaField("challenges", "STRING", mode="REPEATED", description="Client challenges from taxonomy"),
@@ -254,54 +258,78 @@ class BigQueryLoader:
         
         return inserted_rows + updated_rows
 
-    def merge_new_jsonl_data(self, jsonl_path: Path) -> int:
+    def _load_to_temp_table(self, jsonl_path: Path) -> Optional[str]:
         """
-        Merge JSONL data to new meeting_intel BigQuery table using UPSERT
+        Shared helper for merge_*_jsonl_data — load a JSONL into a fresh
+        temp table using the target table's schema (no autodetect). Returns
+        the fully-qualified temp table id, or None on failure.
+        """
+        self.create_dataset_if_not_exists()
+        self.create_new_table_if_not_exists()
 
-        Args:
-            jsonl_path: Path to JSONL file with NewScoredTranscript format
+        target_table_id = f"{self.project_id}.{self.dataset_name}.{self.new_table_name}"
+        temp_table_id = (
+            f"{self.project_id}.{self.dataset_name}.temp_upload_{int(__import__('time').time())}"
+        )
 
-        Returns:
-            Number of rows processed
+        job_config = bigquery.LoadJobConfig(
+            source_format=bigquery.SourceFormat.NEWLINE_DELIMITED_JSON,
+            autodetect=False,
+            write_disposition="WRITE_TRUNCATE",
+            schema=self.client.get_table(target_table_id).schema,
+        )
+
+        console.print(f"[blue]Loading data to temporary table: {temp_table_id}[/blue]")
+        with open(jsonl_path, "rb") as source_file:
+            job = self.client.load_table_from_file(source_file, temp_table_id, job_config=job_config)
+
+        console.print("[yellow]Uploading to temporary table...[/yellow]")
+        job.result()
+
+        if job.errors:
+            console.print(f"[red]Temporary table load failed: {job.errors}[/red]")
+            return None
+        return temp_table_id
+
+    def _run_merge_and_cleanup(self, merge_query: str, temp_table_id: str) -> int:
+        """Execute MERGE, drop the temp table, return inserted+updated count."""
+        target_table_id = f"{self.project_id}.{self.dataset_name}.{self.new_table_name}"
+        console.print(f"[blue]Merging data from temp table to {target_table_id}[/blue]")
+        merge_job = self.client.query(merge_query)
+        merge_job.result()
+
+        stats = merge_job._properties.get("statistics", {}).get("query", {})
+        dml_stats = stats.get("dmlStats", {})
+        inserted_rows = int(dml_stats.get("insertedRowCount", 0))
+        updated_rows = int(dml_stats.get("updatedRowCount", 0))
+        console.print(f"[green]MERGE completed: {inserted_rows} inserted, {updated_rows} updated[/green]")
+
+        self.client.delete_table(temp_table_id)
+        console.print("[blue]Cleaned up temporary table[/blue]")
+
+        final_table = self.client.get_table(target_table_id)
+        console.print(f"[blue]Total table rows: {final_table.num_rows}[/blue]")
+        return inserted_rows + updated_rows
+
+    def merge_client_jsonl_data(self, jsonl_path: Path) -> int:
+        """
+        Merge JSONL data into meeting_intel for the CLIENT scoring domain.
+
+        Writes only client-domain columns (client_info, opportunity scoring,
+        sales assessment, taxonomy tags). Talent-domain columns (talent_*,
+        mentioned_companies, perception_themes, articulated_blockers) are
+        NOT touched — they stay SQL NULL on new rows and unchanged on
+        re-scored ones. This is the "omit-from-SET" pattern from Brief 4.
         """
         if not jsonl_path.exists():
             console.print(f"[red]JSONL file not found: {jsonl_path}[/red]")
             return 0
 
-        # Ensure dataset and table exist
-        self.create_dataset_if_not_exists()
-        self.create_new_table_if_not_exists()
-
-        # Load data into temporary table first
-        temp_table_id = f"{self.project_id}.{self.dataset_name}.temp_upload_{int(__import__('time').time())}"
+        temp_table_id = self._load_to_temp_table(jsonl_path)
+        if temp_table_id is None:
+            return 0
         target_table_id = f"{self.project_id}.{self.dataset_name}.{self.new_table_name}"
 
-        job_config = bigquery.LoadJobConfig(
-            source_format=bigquery.SourceFormat.NEWLINE_DELIMITED_JSON,
-            autodetect=False,  # Use predefined schema
-            write_disposition="WRITE_TRUNCATE",
-            # Specify schema to match new table structure
-            schema=self.client.get_table(target_table_id).schema
-        )
-
-        console.print(f"[blue]Loading data to temporary table: {temp_table_id}[/blue]")
-
-        # Load to temp table
-        with open(jsonl_path, "rb") as source_file:
-            job = self.client.load_table_from_file(
-                source_file,
-                temp_table_id,
-                job_config=job_config
-            )
-
-        console.print("[yellow]Uploading to temporary table...[/yellow]")
-        job.result()  # Wait for completion
-
-        if job.errors:
-            console.print(f"[red]Temporary table load failed: {job.errors}[/red]")
-            return 0
-
-        # Now perform MERGE from temp table to target table
         merge_query = f"""
         MERGE `{target_table_id}` AS target
         USING `{temp_table_id}` AS source
@@ -355,16 +383,66 @@ class BigQueryLoader:
                 sales_strengths = source.sales_strengths,
                 sales_improvements = source.sales_improvements,
                 sales_overall_coaching = source.sales_overall_coaching,
-                -- Routing (added with talent-domain prep)
+                scoring_domain = source.scoring_domain
+        WHEN NOT MATCHED THEN
+            INSERT ROW
+        """
+
+        return self._run_merge_and_cleanup(merge_query, temp_table_id)
+
+    def merge_talent_jsonl_data(self, jsonl_path: Path) -> int:
+        """
+        Merge JSONL data into meeting_intel for the TALENT scoring domain.
+
+        Writes only talent-domain columns (talent_now, talent_triggers,
+        talent_motivation, talent_market, talent_leads, talent_narrative,
+        mentioned_companies, perception_themes, articulated_blockers) plus
+        shared transcript metadata and scoring_domain. Client-domain
+        columns (client_info, total_qualified_sections, qualified,
+        now/next/measure/blocker/fit, taxonomy, sales_*) are NOT touched —
+        they stay SQL NULL on new talent rows.
+        """
+        if not jsonl_path.exists():
+            console.print(f"[red]JSONL file not found: {jsonl_path}[/red]")
+            return 0
+
+        temp_table_id = self._load_to_temp_table(jsonl_path)
+        if temp_table_id is None:
+            return 0
+        target_table_id = f"{self.project_id}.{self.dataset_name}.{self.new_table_name}"
+
+        merge_query = f"""
+        MERGE `{target_table_id}` AS target
+        USING `{temp_table_id}` AS source
+        ON target.meeting_id = source.meeting_id
+        WHEN MATCHED THEN
+            UPDATE SET
+                date = source.date,
+                participants = source.participants,
+                desk = source.desk,
+                source = source.source,
+                granola_note_id = source.granola_note_id,
+                title = source.title,
+                creator_name = source.creator_name,
+                creator_email = source.creator_email,
+                calendar_event_title = source.calendar_event_title,
+                calendar_event_id = source.calendar_event_id,
+                calendar_event_time = source.calendar_event_time,
+                granola_link = source.granola_link,
+                file_created_timestamp = source.file_created_timestamp,
+                zapier_step_id = source.zapier_step_id,
+                enhanced_notes = COALESCE(source.enhanced_notes, target.enhanced_notes),
+                my_notes = COALESCE(source.my_notes, target.my_notes),
+                full_transcript = COALESCE(source.full_transcript, target.full_transcript),
+                scored_at = source.scored_at,
+                llm_model = source.llm_model,
                 scoring_domain = source.scoring_domain,
-                -- Talent-specific scoring buckets (NULL on client rows until TalentScorer lands)
                 talent_now = source.talent_now,
                 talent_triggers = source.talent_triggers,
                 talent_motivation = source.talent_motivation,
                 talent_market = source.talent_market,
                 talent_leads = source.talent_leads,
                 talent_narrative = source.talent_narrative,
-                -- Per-client intelligence extensions (empty on client rows until TalentScorer lands)
                 mentioned_companies = source.mentioned_companies,
                 perception_themes = source.perception_themes,
                 articulated_blockers = source.articulated_blockers
@@ -372,28 +450,13 @@ class BigQueryLoader:
             INSERT ROW
         """
 
-        console.print(f"[blue]Merging data from temp table to {target_table_id}[/blue]")
-        merge_job = self.client.query(merge_query)
-        merge_result = merge_job.result()
+        return self._run_merge_and_cleanup(merge_query, temp_table_id)
 
-        # Get stats from the merge operation
-        stats = merge_job._properties.get('statistics', {}).get('query', {})
-        dml_stats = stats.get('dmlStats', {})
-
-        inserted_rows = int(dml_stats.get('insertedRowCount', 0))
-        updated_rows = int(dml_stats.get('updatedRowCount', 0))
-
-        console.print(f"[green]MERGE completed: {inserted_rows} inserted, {updated_rows} updated[/green]")
-
-        # Clean up temp table
-        self.client.delete_table(temp_table_id)
-        console.print(f"[blue]Cleaned up temporary table[/blue]")
-
-        # Show final table status
-        final_table = self.client.get_table(target_table_id)
-        console.print(f"[blue]Total table rows: {final_table.num_rows}[/blue]")
-
-        return inserted_rows + updated_rows
+    # Backward-compat alias — keeps existing callers (src/cli.py) working
+    # without forcing every caller to learn the scoring_domain split.
+    def merge_new_jsonl_data(self, jsonl_path: Path) -> int:
+        """Backward-compat alias for merge_client_jsonl_data."""
+        return self.merge_client_jsonl_data(jsonl_path)
 
     def load_jsonl_data(self, jsonl_path: Path, write_disposition: str = "WRITE_APPEND") -> int:
         """
@@ -1076,13 +1139,21 @@ def upload_to_bigquery(jsonl_path: Path, write_disposition: str = "WRITE_APPEND"
         return False
 
 
-def upload_to_new_bigquery(jsonl_path: Path, use_merge: bool = True) -> bool:
+def upload_to_new_bigquery(
+    jsonl_path: Path,
+    use_merge: bool = True,
+    *,
+    scoring_domain: str = "client",
+) -> bool:
     """
-    Convenience function to upload JSONL data to new meeting_intel BigQuery table
+    Convenience function to upload JSONL data to new meeting_intel BigQuery table.
 
     Args:
-        jsonl_path: Path to JSONL file with NewScoredTranscript format
-        use_merge: Use MERGE operation to prevent duplicates
+        jsonl_path: Path to JSONL file
+        use_merge: Use MERGE operation (recommended; prevents duplicates)
+        scoring_domain: 'client' (default, current behaviour) or 'talent'.
+            Determines which MERGE SET clause runs — each domain only writes
+            its own columns; the other domain's columns stay SQL NULL.
 
     Returns:
         True if successful, False otherwise
@@ -1091,7 +1162,14 @@ def upload_to_new_bigquery(jsonl_path: Path, use_merge: bool = True) -> bool:
         loader = BigQueryLoader()
 
         if use_merge:
-            rows_processed = loader.merge_new_jsonl_data(jsonl_path)
+            if scoring_domain == "talent":
+                rows_processed = loader.merge_talent_jsonl_data(jsonl_path)
+            elif scoring_domain == "client":
+                rows_processed = loader.merge_client_jsonl_data(jsonl_path)
+            else:
+                raise ValueError(
+                    f"Unknown scoring_domain: {scoring_domain!r} (expected 'client' or 'talent')"
+                )
         else:
             rows_processed = loader.load_new_jsonl_data(jsonl_path)
 
