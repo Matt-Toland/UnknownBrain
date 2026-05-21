@@ -44,7 +44,14 @@ logger = logging.getLogger(__name__)
 
 # Model configuration — kept in lockstep with ClientScorer's MODEL_CONFIGS.
 # Routing decision (Responses API vs Chat Completions) is by prefix.
-TALENT_DEFAULT_MAX_OUTPUT_TOKENS = int(os.getenv("TALENT_LLM_MAX_TOKENS", "4000"))
+#
+# Output budget needs to cover the whole structured extraction JSON for a
+# real meeting (talent_now + triggers + motivation + market + leads +
+# narrative + mentioned_companies/perception_themes/articulated_blockers,
+# each with verbatim evidence_quote strings). 4000 tokens was empirically
+# too tight on a 10KB transcript — saw truncation mid-string. 8000 gives
+# headroom and is still ~$0.02/call on gpt-5-mini.
+TALENT_DEFAULT_MAX_OUTPUT_TOKENS = int(os.getenv("TALENT_LLM_MAX_TOKENS", "8000"))
 TALENT_NARRATIVE_MAX_OUTPUT_TOKENS = int(os.getenv("TALENT_NARRATIVE_MAX_TOKENS", "800"))
 
 
@@ -206,12 +213,16 @@ class TalentScorer:
         user_content = f"{PROMPT_PASS1}\n\nTranscript:\n{context}"
 
         if self.model.startswith("gpt-5") or self.model.startswith("o1"):
-            # Responses API (gpt-5* and o1*)
+            # Responses API (gpt-5* and o1*). Reasoning tokens count against
+            # max_output_tokens, so pin effort=minimal — without it, gpt-5*
+            # can burn the whole budget on hidden reasoning and truncate the
+            # actual structured payload mid-string.
             combined = f"{SYSTEM_INSTRUCTION_PASS1}\n\n{user_content}"
             response = self.client.responses.parse(
                 model=self.model,
                 input=combined,
                 text_format=TalentStructuredExtraction,
+                reasoning={"effort": "minimal"},
                 max_output_tokens=self.max_output_tokens,
             )
             parsed = response.output_parsed
@@ -255,6 +266,7 @@ class TalentScorer:
             response = self.client.responses.create(
                 model=self.model,
                 input=combined,
+                reasoning={"effort": "minimal"},
                 max_output_tokens=self.narrative_max_output_tokens,
             )
             text = (response.output_text or "").strip()
