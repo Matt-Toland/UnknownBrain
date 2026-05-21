@@ -63,7 +63,16 @@ Rules:
 - All `evidence_quote` fields must be VERBATIM from the transcript — do not paraphrase.
 - Use only the values defined by the controlled vocabularies for Literal-typed fields.
 - `talent_triggers` should be 1-3 short phrases describing the top reasons the candidate is open to moving. If they are not actively open, return an empty list.
-- `companies_mentioned` should include current/former employers, target companies, named competitors, and any agency or brand the candidate references by name.
+- `talent_market.openness_to_move` uses a 1–5 scale: 1=not looking at all, 2=passive, 3=open if right opportunity arrives, 4=actively considering, 5=actively interviewing. Use the integer that best fits; null if not inferable.
+
+Companies-vs-people rule (applies to talent_leads.companies_mentioned AND mentioned_companies AND perception_themes.company_name AND articulated_blockers.company_name):
+- INCLUDE: legal entities only — agencies, brands, employers, studios, clients, competitors, named platforms (e.g. YouTube, Spotify), holding groups.
+- EXCLUDE: personal names of individuals (e.g. "Sarah", "Alex Crowell", "Ben"). Names of people are NEVER companies, even when mentioned as connectors or referrals.
+- If a person works at a named company, record the COMPANY, not the person.
+- If you can't tell whether a name refers to a person or a company, exclude it.
+
+Alias deduplication:
+- If the same entity appears under multiple spellings in the transcript (e.g. "HYDP" and "Hyde Park", or "WK" and "Wieden+Kennedy"), emit ONE entry using the most complete / canonical form you see. Do not duplicate.
 """
 
 PROMPT_PASS1 = """\
@@ -76,22 +85,26 @@ Six buckets to populate:
   3. talent_motivation — primary_driver from the controlled vocabulary + a one-line
      `better_description` on what 'better' looks like.
   4. talent_market — current_comp, expected_comp, notice_period, openness_to_move
-     (1=not looking, 5=actively interviewing), realistic_time_to_move.
-  5. talent_leads — companies_mentioned: List[str] of every company they named.
+     (integer 1–5; see system instructions for scale), realistic_time_to_move.
+  5. talent_leads — companies_mentioned: List[str] of every COMPANY they named.
+     This list is the union of legal-entity names referenced in the conversation:
+     current/former employers, target companies, named competitors, agencies, brands,
+     platforms. Personal names of individuals must NOT appear here.
 
 Plus three intelligence-report extensions:
-  6. mentioned_companies — for each named company: {name, type, sentiment, evidence_quote}.
+  6. mentioned_companies — one entry per UNIQUE company (deduplicate alias spellings):
+     {name, type, sentiment, evidence_quote}.
      type ∈ client | competitor | in_house | independent | other.
      sentiment ∈ positive | negative | neutral | mixed.
-  7. perception_themes — perceptions they express about specific companies:
+  7. perception_themes — perceptions the candidate expresses about specific companies:
      {company_name, theme, polarity, evidence_quote}.
      theme ∈ brand | leadership | comp | culture | scope | ambition | flexibility | stability.
      polarity ∈ praise | concern | neutral.
-  8. articulated_blockers — explicit blockers/reasons-to-leave:
+  8. articulated_blockers — explicit blockers / reasons-to-leave anchored to a company:
      {company_name, category, evidence_quote}.
      category ∈ comp_gap | brand | scope | leadership | stability | flexibility | other.
 
-Use null/[] when something can't be inferred. Quotes must be verbatim.
+Reminder: people are never companies (see the companies-vs-people rule). Use null/[] when something can't be inferred. Quotes must be verbatim.
 """
 
 
@@ -99,6 +112,8 @@ SYSTEM_INSTRUCTION_PASS2 = """\
 You write concise candidate briefs from structured intelligence. Output 100-200 words of plain prose, no markdown, no headers.
 
 Cover, in this order: who they are now, what's prompting the move, what they want next, any standout blocker, and their realistic move horizon.
+
+Interpret openness_to_move on a 1–5 scale: 1=not looking, 2=passive, 3=open if right opportunity arrives, 4=actively considering, 5=actively interviewing. Do not invent a different scale.
 
 Do not fabricate facts. Synthesise only from the structured data you are given. If a field is null/empty, simply do not mention it.
 """
@@ -352,9 +367,13 @@ class TalentScorer:
             body_chunks.append("Enhanced notes:\n" + transcript.enhanced_notes.strip())
         if transcript.full_transcript and transcript.full_transcript.strip():
             ft = transcript.full_transcript.strip()
-            # Cap to keep context manageable for non-400k-window models
-            if len(ft) > 12000:
-                ft = ft[:12000] + "\n...\n[Transcript truncated]"
+            # gpt-5* has 400k context — 32k chars (~8k tokens) is comfortable and
+            # covers real meeting transcripts (Ellie 1:1s observed at 28-37k chars).
+            # 12k was lossy. Override via TALENT_TRANSCRIPT_CHAR_CAP if a smaller-
+            # context model is configured.
+            cap = int(os.getenv("TALENT_TRANSCRIPT_CHAR_CAP", "32000"))
+            if len(ft) > cap:
+                ft = ft[:cap] + "\n...\n[Transcript truncated]"
             body_chunks.append("Full transcript:\n" + ft)
         if not body_chunks:
             note_lines = []
