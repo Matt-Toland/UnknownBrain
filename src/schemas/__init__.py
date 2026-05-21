@@ -13,8 +13,26 @@ from .client_schemas import (
     ScoredTranscript,
     SALES_ASSESSMENT_CRITERIA,
 )
+from .talent_schemas import (
+    TalentNow,
+    TalentMotivation,
+    TalentMotivationDriver,
+    TalentMarket,
+    TalentLeads,
+    MentionedCompany,
+    MentionedCompanyType,
+    MentionedCompanySentiment,
+    PerceptionTheme,
+    PerceptionTheme_T,
+    PerceptionTheme_Polarity,
+    ArticulatedBlocker,
+    ArticulatedBlockerCategory,
+    TalentStructuredExtraction,
+    TalentScoringResult,
+)
 
 __all__ = [
+    # Client domain
     "Note",
     "Transcript",
     "SectionResult",
@@ -28,4 +46,20 @@ __all__ = [
     "NewScoredTranscript",
     "ScoredTranscript",
     "SALES_ASSESSMENT_CRITERIA",
+    # Talent domain
+    "TalentNow",
+    "TalentMotivation",
+    "TalentMotivationDriver",
+    "TalentMarket",
+    "TalentLeads",
+    "MentionedCompany",
+    "MentionedCompanyType",
+    "MentionedCompanySentiment",
+    "PerceptionTheme",
+    "PerceptionTheme_T",
+    "PerceptionTheme_Polarity",
+    "ArticulatedBlocker",
+    "ArticulatedBlockerCategory",
+    "TalentStructuredExtraction",
+    "TalentScoringResult",
 ]

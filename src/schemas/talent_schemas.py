@@ -1,0 +1,177 @@
+"""
+Pydantic schemas for the TalentScorer.
+
+The vocabulary is constrained by Literal types so the LLM's structured output
+either lands in the agreed taxonomy or fails loudly via Pydantic validation.
+That's the point: we'd rather a scoring run fail than silently mis-categorise
+a candidate or burn a row of analytics on a hallucinated label.
+
+Six talent buckets (finalised with Carrie) plus three per-client intelligence
+extensions (Ollie's late additions). Schema names map 1:1 onto BigQuery
+column names in `meeting_intel`.
+
+`current_employer_hiring_signal` lives on TalentNow only — it's a fact about
+where the candidate is now, not a lead. Don't duplicate it on TalentLeads.
+"""
+
+from datetime import date as Date, datetime
+from typing import List, Literal, Optional
+
+from pydantic import BaseModel, Field
+
+
+# ---------------------------------------------------------------------------
+# Bucket 1 — Now: who the candidate is and where they sit today
+# ---------------------------------------------------------------------------
+class TalentNow(BaseModel):
+    role: Optional[str] = Field(None, description="Current job title")
+    seniority: Optional[str] = Field(None, description="Seniority level (e.g. mid, senior, head of, director)")
+    company_type: Optional[str] = Field(None, description="Type of company they work at (agency, in-house, consultancy, etc.)")
+    company_lifecycle: Optional[str] = Field(None, description="Lifecycle stage (startup, scaleup, enterprise)")
+    company_discipline: Optional[str] = Field(None, description="Primary discipline of the company")
+    company_industry: Optional[str] = Field(None, description="Industry vertical")
+    current_employer_hiring_signal: Optional[bool] = Field(
+        None,
+        description="Whether the candidate's current employer is hiring (BD lead signal)",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Bucket 3 — Motivation: what 'better' looks like for them
+# ---------------------------------------------------------------------------
+TalentMotivationDriver = Literal[
+    "progression",
+    "salary",
+    "the_work",
+    "flexibility",
+    "work_life_balance",
+    "company_type_change",
+    "benefits",
+    "location",
+    "leadership",
+    "remote_work",
+]
+
+
+class TalentMotivation(BaseModel):
+    primary_driver: TalentMotivationDriver = Field(
+        ..., description="The single biggest reason they're open to moving"
+    )
+    better_description: str = Field(
+        ..., description="One-line description of what 'better' looks like for them"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Bucket 4 — Market reality: comp, notice, openness
+# ---------------------------------------------------------------------------
+class TalentMarket(BaseModel):
+    current_comp: Optional[str] = Field(None, description="Current compensation (base + bonus + equity, free-text)")
+    expected_comp: Optional[str] = Field(None, description="Expected compensation in next role")
+    notice_period: Optional[str] = Field(None, description="Notice period at current employer")
+    openness_to_move: Optional[int] = Field(
+        None, ge=1, le=5, description="1=not looking, 5=actively interviewing"
+    )
+    realistic_time_to_move: Optional[str] = Field(
+        None, description="How long until they could realistically start a new role"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Bucket 5 — Leads: BD funnel signal (companies they name-drop)
+# ---------------------------------------------------------------------------
+class TalentLeads(BaseModel):
+    companies_mentioned: List[str] = Field(
+        default_factory=list,
+        description="Companies the candidate mentioned (current/former employers, targets, competitors)",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Per-client intelligence extensions (Ollie's late additions)
+# ---------------------------------------------------------------------------
+MentionedCompanyType = Literal["client", "competitor", "in_house", "independent", "other"]
+MentionedCompanySentiment = Literal["positive", "negative", "neutral", "mixed"]
+
+
+class MentionedCompany(BaseModel):
+    name: str = Field(..., description="Company name (canonicalised via client_mappings if matched)")
+    type: MentionedCompanyType
+    sentiment: MentionedCompanySentiment
+    evidence_quote: str = Field(..., description="Verbatim quote from the transcript")
+
+
+PerceptionTheme_T = Literal[
+    "brand", "leadership", "comp", "culture", "scope", "ambition", "flexibility", "stability"
+]
+PerceptionTheme_Polarity = Literal["praise", "concern", "neutral"]
+
+
+class PerceptionTheme(BaseModel):
+    company_name: str = Field(..., description="Company being talked about (canonicalised)")
+    theme: PerceptionTheme_T
+    polarity: PerceptionTheme_Polarity
+    evidence_quote: str = Field(..., description="Verbatim quote from the transcript")
+
+
+ArticulatedBlockerCategory = Literal[
+    "comp_gap", "brand", "scope", "leadership", "stability", "flexibility", "other"
+]
+
+
+class ArticulatedBlocker(BaseModel):
+    company_name: str = Field(..., description="Company the blocker is about (canonicalised)")
+    category: ArticulatedBlockerCategory
+    evidence_quote: str = Field(..., description="Verbatim quote from the transcript")
+
+
+# ---------------------------------------------------------------------------
+# Pass 1 response schema — everything the structured-extraction call returns
+# ---------------------------------------------------------------------------
+class TalentStructuredExtraction(BaseModel):
+    """
+    Exact shape requested from the OpenAI structured-output call in Pass 1.
+    Narrative is generated in a second pass (Pass 2) using this as context.
+    """
+    talent_now: TalentNow
+    talent_triggers: List[str] = Field(
+        default_factory=list,
+        description="Top reasons for being open to moving (1-3 short phrases)",
+    )
+    talent_motivation: TalentMotivation
+    talent_market: TalentMarket
+    talent_leads: TalentLeads
+    mentioned_companies: List[MentionedCompany] = Field(default_factory=list)
+    perception_themes: List[PerceptionTheme] = Field(default_factory=list)
+    articulated_blockers: List[ArticulatedBlocker] = Field(default_factory=list)
+
+
+# ---------------------------------------------------------------------------
+# Top-level result returned by TalentScorer.score_transcript_new()
+# ---------------------------------------------------------------------------
+class TalentScoringResult(BaseModel):
+    """
+    Final result combining Pass 1 structured extraction + Pass 2 narrative.
+
+    Flat shape (not nested) so the BQ write-path can read each field directly.
+    Mirrors NewScoreResult's structure for consistency with the client path.
+    """
+    meeting_id: str
+    date: Date
+
+    # Pass 1 — structured extraction
+    talent_now: TalentNow
+    talent_triggers: List[str] = Field(default_factory=list)
+    talent_motivation: TalentMotivation
+    talent_market: TalentMarket
+    talent_leads: TalentLeads
+    mentioned_companies: List[MentionedCompany] = Field(default_factory=list)
+    perception_themes: List[PerceptionTheme] = Field(default_factory=list)
+    articulated_blockers: List[ArticulatedBlocker] = Field(default_factory=list)
+
+    # Pass 2 — narrative prose
+    talent_narrative: str
+
+    # Processing metadata
+    scored_at: datetime
+    llm_model: str
