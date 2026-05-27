@@ -260,6 +260,101 @@ class TestTalentScorerCanonicalisation(unittest.TestCase):
         )
 
 
+class TestTalentScorerStatusInvariants(unittest.TestCase):
+    """
+    `_enforce_status_invariants` is a deterministic code-side guarantee that
+    company_* fields don't leak from a former employer when the model marks
+    a candidate as between_roles. Prompt asks the model to null these out;
+    this method makes it impossible to forget.
+    """
+
+    def _build_extraction(self, **talent_now_fields):
+        # Default talent_now: a fully-populated former-employer snapshot,
+        # so any unintended retention is visible.
+        defaults = dict(
+            role="Creative Director",
+            seniority="senior",
+            company_type="in_house",
+            company_lifecycle="scaleup",
+            company_discipline="branding",
+            company_industry="technology",
+            current_employer_hiring_signal=True,
+        )
+        defaults.update(talent_now_fields)
+        return TalentStructuredExtraction(
+            talent_now=TalentNow(**defaults),
+            talent_triggers=[],
+            talent_motivation=TalentMotivation(
+                primary_driver="progression", better_description="x"
+            ),
+            talent_market=TalentMarket(),
+            talent_leads=TalentLeads(companies_mentioned=[]),
+            mentioned_companies=[],
+            perception_themes=[],
+            articulated_blockers=[],
+        )
+
+    @patch("src.scorers.talent_scorer.OpenAI")
+    def test_between_roles_nulls_company_fields_and_keeps_role(self, _mock):
+        from src.scorers import TalentScorer
+
+        scorer = TalentScorer(model="gpt-5-mini", client_mappings={})
+        ex = self._build_extraction(employment_status="between_roles")
+        cleaned = scorer._enforce_status_invariants(ex)
+
+        # Five fields nulled
+        self.assertIsNone(cleaned.talent_now.company_type)
+        self.assertIsNone(cleaned.talent_now.company_lifecycle)
+        self.assertIsNone(cleaned.talent_now.company_discipline)
+        self.assertIsNone(cleaned.talent_now.company_industry)
+        self.assertIsNone(cleaned.talent_now.current_employer_hiring_signal)
+        # Candidate-attribute fields untouched
+        self.assertEqual(cleaned.talent_now.role, "Creative Director")
+        self.assertEqual(cleaned.talent_now.seniority, "senior")
+        # employment_status itself preserved
+        self.assertEqual(cleaned.talent_now.employment_status, "between_roles")
+
+    @patch("src.scorers.talent_scorer.OpenAI")
+    def test_employed_leaves_company_fields_alone(self, _mock):
+        from src.scorers import TalentScorer
+
+        scorer = TalentScorer(model="gpt-5-mini", client_mappings={})
+        ex = self._build_extraction(employment_status="employed")
+        cleaned = scorer._enforce_status_invariants(ex)
+
+        self.assertEqual(cleaned.talent_now.company_type, "in_house")
+        self.assertEqual(cleaned.talent_now.company_industry, "technology")
+        self.assertTrue(cleaned.talent_now.current_employer_hiring_signal)
+
+    @patch("src.scorers.talent_scorer.OpenAI")
+    def test_on_leave_leaves_company_fields_alone(self, _mock):
+        # The prompt explicitly notes that company_* should reference the
+        # employer the candidate is on leave FROM — those values are correct.
+        from src.scorers import TalentScorer
+
+        scorer = TalentScorer(model="gpt-5-mini", client_mappings={})
+        ex = self._build_extraction(employment_status="on_leave")
+        cleaned = scorer._enforce_status_invariants(ex)
+
+        self.assertEqual(cleaned.talent_now.company_type, "in_house")
+        self.assertEqual(cleaned.talent_now.company_industry, "technology")
+        self.assertTrue(cleaned.talent_now.current_employer_hiring_signal)
+
+    @patch("src.scorers.talent_scorer.OpenAI")
+    def test_none_status_leaves_company_fields_alone(self, _mock):
+        # When the model can't determine status, we don't have grounds to null
+        # company_* — leave the model's best guess in place.
+        from src.scorers import TalentScorer
+
+        scorer = TalentScorer(model="gpt-5-mini", client_mappings={})
+        ex = self._build_extraction(employment_status=None)
+        cleaned = scorer._enforce_status_invariants(ex)
+
+        self.assertEqual(cleaned.talent_now.company_type, "in_house")
+        self.assertEqual(cleaned.talent_now.company_industry, "technology")
+        self.assertTrue(cleaned.talent_now.current_employer_hiring_signal)
+
+
 class TestTalentScorerTwoPassFlow(unittest.TestCase):
     """Mock the OpenAI client end-to-end and verify the two-pass call shape."""
 

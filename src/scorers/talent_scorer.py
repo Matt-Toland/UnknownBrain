@@ -244,6 +244,7 @@ class TalentScorer:
 
         Pass 1: structured extraction.
         Canonicalise company names against client_mappings.
+        Enforce status invariants (deterministic; not prompt-level).
         Pass 2: narrative summary from the canonicalised Pass-1 output.
         """
         context = self._format_transcript(transcript)
@@ -253,6 +254,12 @@ class TalentScorer:
 
         # Normalise company names against the canonical mapping table
         extraction = self._canonicalise_companies(extraction)
+
+        # Enforce employment_status invariants (defense in depth — the prompt
+        # asks the model to do this, but observed v2 outputs show partial
+        # obedience. A code-side cleanup guarantees cross-consumer consistency
+        # downstream.)
+        extraction = self._enforce_status_invariants(extraction)
 
         # Pass 2 — narrative summary, fed the canonicalised Pass-1 output (not the raw transcript)
         narrative = self._run_narrative_pass(extraction, transcript.meeting_id)
@@ -365,6 +372,47 @@ class TalentScorer:
             )
             text = "Candidate summary unavailable — narrative pass returned no output."
         return text
+
+    # ---------------------------------------------------------------------
+    # Employment-status invariant enforcement
+    # ---------------------------------------------------------------------
+    @staticmethod
+    def _enforce_status_invariants(
+        extraction: TalentStructuredExtraction,
+    ) -> TalentStructuredExtraction:
+        """
+        Deterministic post-Pass-1 cleanup of TalentNow company_* fields based
+        on employment_status. The prompt asks the model to do this directly;
+        observed v2 outputs (Min Choi) show partial obedience — role nulled
+        correctly but company_type / company_industry leaked from the
+        most-recent employer. Pass-2 already reads employment_status fine
+        (narrative correctly opens "currently between roles"), but any other
+        consumer reading e.g. `talent_now.company_industry` directly would
+        get stale data without checking employment_status. This step makes
+        that silent inconsistency impossible.
+
+        Rules (from SCHEMA_DELTA.md §3, mirroring the Pass-1 system instruction):
+          - `between_roles`: null out company_type, company_lifecycle,
+            company_discipline, company_industry, and
+            current_employer_hiring_signal. Keep role and seniority — those
+            are candidate attributes, not employer attributes.
+          - `employed`: no changes. company_* fields are correct for the
+            candidate's current role.
+          - `on_leave`: no changes. The prompt explicitly notes that
+            company_* fields should reference the employer they're on
+            leave from — this is the one case where most-recent employer
+            values are the right answer.
+          - None / unset: no changes. The model couldn't determine the
+            status; we don't have grounds to second-guess company_* fields.
+        """
+        now = extraction.talent_now
+        if now.employment_status == "between_roles":
+            now.company_type = None
+            now.company_lifecycle = None
+            now.company_discipline = None
+            now.company_industry = None
+            now.current_employer_hiring_signal = None
+        return extraction
 
     # ---------------------------------------------------------------------
     # Company-name canonicalisation (exact-match alias lookup only)
