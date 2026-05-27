@@ -2,8 +2,7 @@
 Source-aware scorer routing.
 
 Resolves the `source` custom-metadata field on a GCS object and dispatches
-to the appropriate scorer. Only `client` is wired up today; `talent` is a
-deliberate NotImplementedError so any accidental routing fails loudly.
+to the appropriate scorer.
 
 `resolve_source` is strict: it RAISES if the metadata is missing, has no
 `source` key, or has an empty/None value. The default-to-client behaviour
@@ -15,9 +14,9 @@ misconfigured, out-of-band gsutil cp, etc.) and must fail loudly rather
 than silently get scored as client.
 """
 
-from typing import Any, Mapping, Optional
+from typing import Any, Mapping, Optional, Union
 
-from .scorers import ClientScorer
+from .scorers import ClientScorer, TalentScorer
 
 
 KNOWN_SOURCES = {"client", "talent"}
@@ -51,22 +50,20 @@ def resolve_source(metadata: Optional[Mapping[str, Any]]) -> str:
     return resolved
 
 
-def get_scorer(source: str, *, model: Optional[str] = None) -> ClientScorer:
+def get_scorer(
+    source: str, *, model: Optional[str] = None
+) -> Union[ClientScorer, TalentScorer]:
     """
     Return the scorer for a resolved source string, or raise.
 
     - "client"  -> ClientScorer(model=...)
-    - "talent"  -> NotImplementedError (intentional guard until the talent
-      scorer lands in a follow-up PR)
+    - "talent"  -> TalentScorer(model=...)
     - anything else -> ValueError
     """
     if source == "client":
         return ClientScorer(model=model)
     if source == "talent":
-        raise NotImplementedError(
-            "Talent scorer not yet implemented (source='talent'). "
-            "Routing skeleton is in place; the scorer lands in a follow-up PR."
-        )
+        return TalentScorer(model=model)
     raise ValueError(
         f"Unknown source: {source!r}. Expected one of {sorted(KNOWN_SOURCES)}."
     )

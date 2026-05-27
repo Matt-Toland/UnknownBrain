@@ -544,7 +544,12 @@ async def process_pipeline(
             print(f"Using cached result for real meeting_id {real_meeting_id}")
             processing_status[meeting_id].status = "completed"
             processing_status[meeting_id].completed_at = datetime.now().isoformat()
-            processing_status[meeting_id].score = cached_result['results']['total_qualified_sections']
+            # `total_qualified_sections` is a client-domain concept; talent
+            # caches omit it. Use .get() so the talent cache-hit path
+            # doesn't KeyError.
+            processing_status[meeting_id].score = cached_result.get("results", {}).get(
+                "total_qualified_sections"
+            )
             return
 
         # 4. Score with LLM using new format
@@ -552,9 +557,11 @@ async def process_pipeline(
         scorer = get_scorer(source, model=scoring_model)
         new_score_result = scorer.score_transcript_new(transcript)
 
-        # 4.5 Add sales assessment scoring
+        # 4.5 Sales assessment runs ONLY on client transcripts. Talent
+        # transcripts are recruiter↔candidate conversations — there's no
+        # UNKNOWN salesperson behaviour to assess.
         sales_score_result = None
-        if os.getenv('ENABLE_SALES_SCORING', 'true').lower() == 'true':
+        if source == "client" and os.getenv('ENABLE_SALES_SCORING', 'true').lower() == 'true':
             try:
                 print(f"Performing sales assessment...")
                 sales_score_result = scorer.score_salesperson(transcript)
@@ -563,19 +570,40 @@ async def process_pipeline(
                 print(f"Sales scoring failed (non-fatal): {e}")
                 # Continue without sales data - this is not critical
 
-        # 5. Cache the results using real meeting_id
+        # 5. Cache the results using real meeting_id. The talent result is
+        # a Pydantic model with nested Pydantic submodels (TalentNow,
+        # MentionedCompany, ...); .__dict__ alone wouldn't recursively
+        # serialise, so use model_dump for talent. The client path keeps
+        # using .__dict__ for backward-compatibility.
         print("Caching results")
-        gcs.cache_score(real_meeting_id, scoring_model, source, new_score_result.__dict__)
+        if source == "talent":
+            cache_payload = new_score_result.model_dump(mode="json")
+        else:
+            cache_payload = new_score_result.__dict__
+        gcs.cache_score(real_meeting_id, scoring_model, source, cache_payload)
 
-        # 6. Upload to meeting_intel BigQuery table
+        # 6. Upload to meeting_intel BigQuery table — dispatch by domain so
+        # each path writes only its own columns (sales_* stay NULL on
+        # talent rows; talent_*/perception/blockers stay NULL on client rows).
         print("Uploading to BigQuery")
-        await upload_new_format_to_bigquery(transcript, new_score_result, sales_score_result, scoring_model, real_meeting_id, temp_files)
-        
-        # Update status with completion
+        if source == "talent":
+            await upload_talent_format_to_bigquery(
+                transcript, new_score_result, scoring_model, real_meeting_id, temp_files
+            )
+        else:
+            await upload_new_format_to_bigquery(
+                transcript, new_score_result, sales_score_result, scoring_model, real_meeting_id, temp_files
+            )
+
+        # Update status with completion. Talent results don't have a
+        # `total_qualified_sections` (they're structured intelligence, not
+        # a binary score); fall back to None on that path.
         processing_status[meeting_id].status = "completed"
         processing_status[meeting_id].completed_at = datetime.now().isoformat()
-        processing_status[meeting_id].score = new_score_result.total_qualified_sections
-        
+        processing_status[meeting_id].score = getattr(
+            new_score_result, "total_qualified_sections", None
+        )
+
         print(f"Successfully processed {meeting_id}")
         
     except Exception as e:
@@ -759,6 +787,91 @@ async def upload_new_format_to_bigquery(
 
     except Exception as e:
         logger.error(f"Error uploading new format to BigQuery for {meeting_id}: {e}", exc_info=True)
+
+
+async def upload_talent_format_to_bigquery(
+    transcript,
+    talent_result,
+    model: str,
+    meeting_id: str,
+    temp_files: List[Path],
+):
+    """
+    Upload a TalentScoringResult to meeting_intel.
+
+    Mirrors `upload_new_format_to_bigquery` but writes ONLY the talent-domain
+    columns (talent_*, mentioned_companies, perception_themes,
+    articulated_blockers) plus shared transcript metadata and scoring_domain.
+    Client-domain columns (client_info, total_qualified_sections, now/next/
+    measure/blocker/fit, challenges/results/offering, sales_*) are not set
+    here; the talent MERGE leaves them alone so they stay SQL NULL on new
+    rows and unchanged on re-scored ones.
+    """
+    try:
+        bq_row = {
+            # Shared transcript metadata
+            "meeting_id": talent_result.meeting_id,
+            "date": transcript.date.isoformat() if transcript.date else None,
+            "participants": getattr(transcript, "participants", []),
+            "desk": getattr(transcript, "desk", "Unknown"),
+            "source": getattr(transcript, "source", None),
+
+            # Granola metadata (shared, optional)
+            "granola_note_id": getattr(transcript, "granola_note_id", None),
+            "title": getattr(transcript, "title", None),
+            "creator_name": getattr(transcript, "creator_name", None),
+            "creator_email": getattr(transcript, "creator_email", None),
+            "calendar_event_title": getattr(transcript, "calendar_event_title", None),
+            "calendar_event_id": getattr(transcript, "calendar_event_id", None),
+            "calendar_event_time": convert_to_utc_timestamp(
+                getattr(transcript, "calendar_event_time", None)
+            ),
+            "granola_link": getattr(transcript, "granola_link", None),
+            "file_created_timestamp": safe_int_convert(
+                getattr(transcript, "file_created_timestamp", None)
+            ),
+            "zapier_step_id": safe_int_convert(getattr(transcript, "zapier_step_id", None)),
+
+            # Content sections (shared)
+            "enhanced_notes": getattr(transcript, "enhanced_notes", None),
+            "my_notes": getattr(transcript, "my_notes", None),
+            "full_transcript": getattr(transcript, "full_transcript", None),
+
+            # Processing metadata
+            "scored_at": talent_result.scored_at.isoformat(timespec="seconds"),
+            "llm_model": talent_result.llm_model,
+
+            # Routing
+            "scoring_domain": "talent",
+
+            # Talent-specific scoring buckets
+            "talent_now": talent_result.talent_now.model_dump(mode="json"),
+            "talent_triggers": talent_result.talent_triggers,
+            "talent_motivation": talent_result.talent_motivation.model_dump(mode="json"),
+            "talent_market": talent_result.talent_market.model_dump(mode="json"),
+            "talent_leads": talent_result.talent_leads.model_dump(mode="json"),
+            "talent_narrative": talent_result.talent_narrative,
+
+            # Per-client intelligence extensions
+            "mentioned_companies": [m.model_dump(mode="json") for m in talent_result.mentioned_companies],
+            "perception_themes": [p.model_dump(mode="json") for p in talent_result.perception_themes],
+            "articulated_blockers": [a.model_dump(mode="json") for a in talent_result.articulated_blockers],
+        }
+
+        temp_jsonl_path = Path(f"/tmp/{meeting_id}_talent.jsonl")
+        temp_files.append(temp_jsonl_path)
+
+        with open(temp_jsonl_path, "w") as f:
+            f.write(json.dumps(bq_row) + "\n")
+
+        success = upload_to_new_bigquery(temp_jsonl_path, use_merge=True, scoring_domain="talent")
+        if success:
+            print(f"Successfully uploaded {meeting_id} to meeting_intel as scoring_domain=talent")
+        else:
+            print(f"Failed to upload {meeting_id} to meeting_intel (talent path)")
+
+    except Exception as e:
+        logger.error(f"Error uploading talent format to BigQuery for {meeting_id}: {e}", exc_info=True)
 
 
 async def process_batch_pipeline(
