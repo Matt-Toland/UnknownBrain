@@ -65,7 +65,13 @@ Rules:
 - `talent_triggers` should be 1-3 short phrases describing the top reasons the candidate is open to moving. If they are not actively open, return an empty list.
 - `talent_market.openness_to_move` uses a 1–5 scale: 1=not looking at all, 2=passive, 3=open if right opportunity arrives, 4=actively considering, 5=actively interviewing. Use the integer that best fits; null if not inferable.
 
-Companies-vs-people rule (applies to talent_leads.companies_mentioned AND mentioned_companies AND perception_themes.company_name AND articulated_blockers.company_name):
+Employment status (`talent_now.employment_status`):
+Determine the candidate's current employment status:
+- `employed` — currently in a role (perm or freelance-on-gig). Populate `company_*` fields normally.
+- `between_roles` — just wrapped a contract, recently laid off, not currently engaged. Set all `company_*` fields and `current_employer_hiring_signal` to null. Do not back-fill from their most-recent employer.
+- `on_leave` — currently on parental/maternity/paternity leave or another planned career pause. The `company_*` fields should reference the employer they're on leave from. This is the one case where the most-recent employer values are correct.
+
+Companies-vs-people rule (applies to talent_leads.companies_mentioned AND mentioned_companies AND perception_themes.company_name AND articulated_blockers.company_name when populated):
 - INCLUDE: legal entities only — agencies, brands, employers, studios, clients, competitors, named platforms (e.g. YouTube, Spotify), holding groups.
 - EXCLUDE: personal names of individuals (e.g. "Sarah", "Alex Crowell", "Ben"). Names of people are NEVER companies, even when mentioned as connectors or referrals.
 - If a person works at a named company, record the COMPANY, not the person.
@@ -73,6 +79,12 @@ Companies-vs-people rule (applies to talent_leads.companies_mentioned AND mentio
 
 Alias deduplication:
 - If the same entity appears under multiple spellings in the transcript (e.g. "HYDP" and "Hyde Park", or "WK" and "Wieden+Kennedy"), emit ONE entry using the most complete / canonical form you see. Do not duplicate.
+
+Source attribution (mentioned_companies AND perception_themes):
+- For each entry, set `source="candidate"` if the perception comes from the candidate's own words, or `source="recruiter"` if the recruiter made the statement. If both speakers express the same view independently, prefer `"candidate"`. The `evidence_quote` should be from whichever speaker the `source` indicates.
+
+Articulated blockers without a named company:
+- Not all blockers are anchored to a named company. Role-shaped blockers ("I don't want to be a middle person"), discipline-shaped ("I won't do web design"), category-shaped ("I'm done with classic advertising agencies"), or condition-shaped ("I can't work UK hours") have no named company. In those cases, set `company_name` to null and use the `category` value that best describes the blocker class. If a blocker truly references a specific named company, populate `company_name` as before. Do NOT invent or fabricate a company name to fill the field.
 """
 
 PROMPT_PASS1 = """\
@@ -80,12 +92,49 @@ Extract structured talent intelligence from the meeting transcript below.
 
 Six buckets to populate:
   1. talent_now — who they are: role, seniority, company_type, company_lifecycle,
-     company_discipline, company_industry, current_employer_hiring_signal (boolean).
+     company_discipline, company_industry, current_employer_hiring_signal (boolean),
+     employment_status (employed | between_roles | on_leave — see system instructions).
   2. talent_triggers — 1-3 short phrases on the top reasons they're open to moving.
-  3. talent_motivation — primary_driver from the controlled vocabulary + a one-line
-     `better_description` on what 'better' looks like.
+  3. talent_motivation — primary_driver from the controlled vocabulary
+     (progression | salary | the_work | flexibility | work_life_balance |
+      company_type_change | employment_type_change | benefits | location |
+      leadership | remote_work) + a one-line `better_description` on what
+     'better' looks like + `employment_preference`.
+     `employment_preference` — does the candidate want permanent employment,
+     freelance, contract, or are they open to either? Use `open` only when
+     explicitly indifferent. Null if not articulated.
+     Use `employment_type_change` as the primary_driver when the candidate's
+     core motivation is moving between employment types (e.g. contract →
+     permanent, or permanent → freelance).
   4. talent_market — current_comp, expected_comp, notice_period, openness_to_move
      (integer 1–5; see system instructions for scale), realistic_time_to_move.
+
+     Comp capture:
+     `current_comp` is volunteered-only — the recruiter does not ask for it
+     directly. Expect this field to be null on most transcripts. `expected_comp`
+     is the candidate's desired/ideal figure and is the operational field.
+
+     Capture comp verbatim as expressed by the candidate, in whatever shape
+     they give it:
+       - Salary — e.g. "$145k", "£80–100k". Standard perm shape.
+       - Day rate — e.g. "£450/day", "$1,900/day". Common for freelance/contract.
+       - Hourly rate — e.g. "$145/hour".
+       - Annual freelance-income anchor + perm-equivalent — e.g.
+         "I make ~$325k/year as a freelancer; perm-equivalent would be $625k".
+         Record both figures and label them.
+       - Posted-band reference — e.g. "the bottom of that range works". Record
+         the reference and the band.
+       - Equity-heavy comp — for startup/early-stage roles, capture equity/
+         options references alongside cash where mentioned.
+
+     Do not convert between shapes (no day-rate → annual conversion). Do not
+     invent or fabricate comp values. Record exactly what the candidate said,
+     in their words; if unclear or absent, set the field to null.
+
+     `realistic_time_to_move` also captures explicit legal or availability
+     constraints as free text — e.g. "non-compete with [employer] ends [date]",
+     "needs visa sponsorship", "maternity leave ends [date]". These are hard
+     gates on the move and must surface here, not be inferred downstream.
   5. talent_leads — companies_mentioned: List[str] of every COMPANY they named.
      This list is the union of legal-entity names referenced in the conversation:
      current/former employers, target companies, named competitors, agencies, brands,
@@ -93,15 +142,20 @@ Six buckets to populate:
 
 Plus three intelligence-report extensions:
   6. mentioned_companies — one entry per UNIQUE company (deduplicate alias spellings):
-     {name, type, sentiment, evidence_quote}.
+     {name, type, sentiment, evidence_quote, source}.
      type ∈ client | competitor | in_house | independent | other.
      sentiment ∈ positive | negative | neutral | mixed.
-  7. perception_themes — perceptions the candidate expresses about specific companies:
-     {company_name, theme, polarity, evidence_quote}.
+     source ∈ candidate | recruiter (see system instructions).
+  7. perception_themes — perceptions expressed about specific companies:
+     {company_name, theme, polarity, evidence_quote, source}.
      theme ∈ brand | leadership | comp | culture | scope | ambition | flexibility | stability.
      polarity ∈ praise | concern | neutral.
-  8. articulated_blockers — explicit blockers / reasons-to-leave anchored to a company:
+     source ∈ candidate | recruiter.
+  8. articulated_blockers — explicit blockers / reasons-to-leave:
      {company_name, category, evidence_quote}.
+     company_name is OPTIONAL — set to null for role/discipline/category/
+     condition-shaped blockers that don't reference a specific company
+     (see system instructions). Do not invent a company name to fill the field.
      category ∈ comp_gap | brand | scope | leadership | stability | flexibility | other.
 
 Reminder: people are never companies (see the companies-vs-people rule). Use null/[] when something can't be inferred. Quotes must be verbatim.

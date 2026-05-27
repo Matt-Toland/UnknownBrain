@@ -54,12 +54,14 @@ def _make_extraction_stub():
                 type="competitor",
                 sentiment="positive",
                 evidence_quote="we love AKQA's work",
+                source="candidate",
             ),
             MentionedCompany(
                 name="UnmatchedCo Ltd",  # not in mappings — pass-through expected
                 type="other",
                 sentiment="neutral",
                 evidence_quote="met some folks at UnmatchedCo",
+                source="candidate",
             ),
         ],
         perception_themes=[
@@ -68,6 +70,7 @@ def _make_extraction_stub():
                 theme="brand",
                 polarity="praise",
                 evidence_quote="WK has the best brand",
+                source="candidate",
             ),
         ],
         articulated_blockers=[
@@ -109,13 +112,15 @@ class TestTalentSchemaValidation(unittest.TestCase):
     def test_invalid_mentioned_company_type_raises(self):
         with self.assertRaises(ValidationError):
             MentionedCompany(
-                name="x", type="not-a-real-type", sentiment="positive", evidence_quote="y"
+                name="x", type="not-a-real-type", sentiment="positive",
+                evidence_quote="y", source="candidate",
             )
 
     def test_invalid_perception_theme_raises(self):
         with self.assertRaises(ValidationError):
             PerceptionTheme(
-                company_name="x", theme="bogus", polarity="praise", evidence_quote="y"
+                company_name="x", theme="bogus", polarity="praise",
+                evidence_quote="y", source="candidate",
             )
 
     def test_invalid_blocker_category_raises(self):
@@ -125,6 +130,49 @@ class TestTalentSchemaValidation(unittest.TestCase):
     def test_openness_to_move_out_of_range_raises(self):
         with self.assertRaises(ValidationError):
             TalentMarket(openness_to_move=10)
+
+    def test_employment_type_change_is_valid_primary_driver(self):
+        # Added per SCHEMA_DELTA #2 for contract→permanent moves.
+        m = TalentMotivation(
+            primary_driver="employment_type_change",
+            better_description="Move from contracting to a permanent senior title",
+        )
+        self.assertEqual(m.primary_driver, "employment_type_change")
+
+    def test_invalid_employment_preference_raises(self):
+        with self.assertRaises(ValidationError):
+            TalentMotivation(
+                primary_driver="progression",
+                better_description="x",
+                employment_preference="part_time",  # not in vocab
+            )
+
+    def test_invalid_employment_status_raises(self):
+        with self.assertRaises(ValidationError):
+            TalentNow(employment_status="furloughed")  # not in vocab
+
+    def test_articulated_blocker_company_name_can_be_null(self):
+        # SCHEMA_DELTA #6: role/discipline/category/condition-shaped blockers
+        # legitimately have no named company.
+        b = ArticulatedBlocker(
+            company_name=None,
+            category="scope",
+            evidence_quote="I'm done with classic advertising agencies",
+        )
+        self.assertIsNone(b.company_name)
+
+    def test_mentioned_company_missing_source_raises(self):
+        # SCHEMA_DELTA #5: source is required, not optional.
+        with self.assertRaises(ValidationError):
+            MentionedCompany(
+                name="X", type="client", sentiment="neutral", evidence_quote="y"
+            )
+
+    def test_perception_theme_missing_source_raises(self):
+        with self.assertRaises(ValidationError):
+            PerceptionTheme(
+                company_name="X", theme="brand", polarity="praise", evidence_quote="y"
+            )
 
 
 class TestTalentScorerConstruction(unittest.TestCase):

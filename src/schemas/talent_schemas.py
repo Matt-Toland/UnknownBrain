@@ -23,6 +23,9 @@ from pydantic import BaseModel, Field
 # ---------------------------------------------------------------------------
 # Bucket 1 — Now: who the candidate is and where they sit today
 # ---------------------------------------------------------------------------
+TalentEmploymentStatus = Literal["employed", "between_roles", "on_leave"]
+
+
 class TalentNow(BaseModel):
     role: Optional[str] = Field(None, description="Current job title")
     seniority: Optional[str] = Field(None, description="Seniority level (e.g. mid, senior, head of, director)")
@@ -33,6 +36,10 @@ class TalentNow(BaseModel):
     current_employer_hiring_signal: Optional[bool] = Field(
         None,
         description="Whether the candidate's current employer is hiring (BD lead signal)",
+    )
+    employment_status: Optional[TalentEmploymentStatus] = Field(
+        None,
+        description="Whether the candidate is currently employed, between roles, or on planned leave",
     )
 
 
@@ -46,11 +53,14 @@ TalentMotivationDriver = Literal[
     "flexibility",
     "work_life_balance",
     "company_type_change",
+    "employment_type_change",
     "benefits",
     "location",
     "leadership",
     "remote_work",
 ]
+
+TalentEmploymentPreference = Literal["permanent", "freelance", "contract", "open"]
 
 
 class TalentMotivation(BaseModel):
@@ -59,6 +69,10 @@ class TalentMotivation(BaseModel):
     )
     better_description: str = Field(
         ..., description="One-line description of what 'better' looks like for them"
+    )
+    employment_preference: Optional[TalentEmploymentPreference] = Field(
+        None,
+        description="Permanent / freelance / contract / open. Null if not articulated.",
     )
 
 
@@ -92,6 +106,7 @@ class TalentLeads(BaseModel):
 # ---------------------------------------------------------------------------
 MentionedCompanyType = Literal["client", "competitor", "in_house", "independent", "other"]
 MentionedCompanySentiment = Literal["positive", "negative", "neutral", "mixed"]
+PerceptionSource = Literal["candidate", "recruiter"]
 
 
 class MentionedCompany(BaseModel):
@@ -99,6 +114,10 @@ class MentionedCompany(BaseModel):
     type: MentionedCompanyType
     sentiment: MentionedCompanySentiment
     evidence_quote: str = Field(..., description="Verbatim quote from the transcript")
+    source: PerceptionSource = Field(
+        ...,
+        description="Whether the mention/perception came from the candidate or the recruiter",
+    )
 
 
 PerceptionTheme_T = Literal[
@@ -112,6 +131,10 @@ class PerceptionTheme(BaseModel):
     theme: PerceptionTheme_T
     polarity: PerceptionTheme_Polarity
     evidence_quote: str = Field(..., description="Verbatim quote from the transcript")
+    source: PerceptionSource = Field(
+        ...,
+        description="Whether the perception came from the candidate or the recruiter",
+    )
 
 
 ArticulatedBlockerCategory = Literal[
@@ -120,7 +143,16 @@ ArticulatedBlockerCategory = Literal[
 
 
 class ArticulatedBlocker(BaseModel):
-    company_name: str = Field(..., description="Company the blocker is about (canonicalised)")
+    # Optional since Brief 4 review: role/discipline/category/condition-shaped
+    # blockers ("I don't want to be a middle person", "I won't do web design",
+    # "I'm done with classic advertising agencies", "I can't work UK hours")
+    # legitimately have no named company. The baseline test showed the LLM
+    # inventing non-company strings ("general_contracting", "advertising
+    # agencies") to satisfy a required field — worse than null.
+    company_name: Optional[str] = Field(
+        None,
+        description="Company the blocker is about (canonicalised). Null for role/discipline/category/condition-shaped blockers.",
+    )
     category: ArticulatedBlockerCategory
     evidence_quote: str = Field(..., description="Verbatim quote from the transcript")
 
