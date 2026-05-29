@@ -60,7 +60,8 @@ You analyse recruiter-to-candidate conversation transcripts and extract structur
 
 Rules:
 - Only return facts supported by the transcript. If a field cannot be inferred, set it to null (Optional fields) or an empty list (List fields).
-- All `evidence_quote` fields must be VERBATIM from the transcript — do not paraphrase.
+- Your source of truth is the actual conversation — the section labelled "Full transcript" (or "Conversation notes" when no transcript is available). Extract ALL factual detail from there: comp figures, dates, notice periods, company names, etc. A meeting may also include an "Enhanced notes" section — that is an AI-generated SUMMARY, a paraphrase that often omits or compresses detail. Use it only to orient yourself; NEVER quote from it and NEVER treat its absence of a detail as evidence the detail wasn't said. When the transcript and the summary disagree, the transcript wins.
+- All `evidence_quote` fields must be VERBATIM from the actual conversation (the "Full transcript" / "Conversation notes" section) — copy the candidate's or recruiter's own words exactly, never a summary's paraphrase. Do not paraphrase.
 - Use only the values defined by the controlled vocabularies for Literal-typed fields.
 - `talent_triggers` should be 1-3 short phrases describing the top reasons the candidate is open to moving. If they are not actively open, return an empty list.
 - `talent_market.openness_to_move` uses a 1–5 scale: 1=not looking at all, 2=passive, 3=open if right opportunity arrives, 4=actively considering, 5=actively interviewing. Use the integer that best fits; null if not inferable.
@@ -462,27 +463,51 @@ class TalentScorer:
             f"Participants: {', '.join(transcript.participants) if transcript.participants else 'Unknown'}\n"
         )
 
-        # Prefer enhanced notes if present (Granola's structured output); fall back to
-        # full transcript; finally fall back to raw notes.
+        # Source priority: the actual conversation is authoritative. Granola's
+        # "Enhanced Notes" are an AI-generated SUMMARY of the call, not real
+        # speech — quoting them breaks the verbatim guarantee, and anchoring on
+        # them drops detail that only exists in the raw conversation (e.g. a
+        # candidate's second comp figure stated mid-call but omitted from the
+        # summary). So:
+        #   - full transcript present  -> use it as the SOLE source; do NOT
+        #     include enhanced notes (nothing to mis-quote or anchor on).
+        #   - no full transcript       -> fall back to enhanced notes, clearly
+        #     labelled as a summary so the model knows quotes are best-effort.
+        #   - neither                  -> fall back to raw speaker-tagged notes.
         body_chunks: list[str] = []
-        if transcript.enhanced_notes and transcript.enhanced_notes.strip():
-            body_chunks.append("Enhanced notes:\n" + transcript.enhanced_notes.strip())
         if transcript.full_transcript and transcript.full_transcript.strip():
             ft = transcript.full_transcript.strip()
-            # gpt-5* has 400k context — 32k chars (~8k tokens) is comfortable and
-            # covers real meeting transcripts (Ellie 1:1s observed at 28-37k chars).
-            # 12k was lossy. Override via TALENT_TRANSCRIPT_CHAR_CAP if a smaller-
-            # context model is configured.
-            cap = int(os.getenv("TALENT_TRANSCRIPT_CHAR_CAP", "32000"))
+            # gpt-5* has a 400k-token context window (~1.6M chars), so the
+            # transcript is nowhere near the real constraint. The previous 32k
+            # cap silently truncated real calls and dropped late-conversation
+            # detail — e.g. a candidate's perm-equivalent comp figure stated
+            # ~34k chars in was cut off, leaving comp null. Real 1:1 recruiter
+            # calls run 28-43k chars observed; 120k chars (~30k input tokens,
+            # ~$0.008 on gpt-5-mini) covers a long call with wide headroom and
+            # is still a tiny fraction of the window. Kept as a backstop against
+            # pathological inputs; override via TALENT_TRANSCRIPT_CHAR_CAP.
+            cap = int(os.getenv("TALENT_TRANSCRIPT_CHAR_CAP", "120000"))
             if len(ft) > cap:
                 ft = ft[:cap] + "\n...\n[Transcript truncated]"
-            body_chunks.append("Full transcript:\n" + ft)
-        if not body_chunks:
+            body_chunks.append(
+                "Full transcript (the actual conversation — your sole source for "
+                "facts and verbatim quotes):\n" + ft
+            )
+        elif transcript.enhanced_notes and transcript.enhanced_notes.strip():
+            body_chunks.append(
+                "Enhanced notes (AI-GENERATED SUMMARY — no full transcript "
+                "available; this is a paraphrase, NOT verbatim speech):\n"
+                + transcript.enhanced_notes.strip()
+            )
+        else:
             note_lines = []
             for note in transcript.notes:
                 ts = f"[{note.t}] " if note.t else ""
                 spk = f"{note.speaker}: " if note.speaker else ""
                 note_lines.append(f"{ts}{spk}{note.text}")
-            body_chunks.append("Notes:\n" + "\n".join(note_lines))
+            body_chunks.append(
+                "Conversation notes (speaker-tagged — your source for facts and "
+                "verbatim quotes):\n" + "\n".join(note_lines)
+            )
 
         return header + "\n" + "\n\n".join(body_chunks)

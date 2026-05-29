@@ -138,10 +138,15 @@ class TestProcessPipelineRoutingGuarantee(unittest.TestCase):
     coroutines so the pipeline only exercises the dispatch branches.
     """
 
-    def _run_pipeline(self, blob_metadata):
+    def _run_pipeline(self, blob_metadata, *, temp_path="/tmp/fake-transcript.txt",
+                      transcript_meeting_id="test-meeting-id", granola_note_id=None):
         """Drive process_pipeline once with a mocked GCS blob.
         Returns (status, mocks_dict) where mocks_dict exposes both BQ
-        writers and both scorer classes for assertions."""
+        writers and both scorer classes for assertions.
+
+        temp_path / transcript_meeting_id / granola_note_id let a caller
+        reproduce the poison-key scenario (importer falls back to the
+        temp-file stem as meeting_id)."""
         import main as main_module
 
         # Mock GCS client + blob
@@ -152,7 +157,7 @@ class TestProcessPipelineRoutingGuarantee(unittest.TestCase):
         mock_gcs = MagicMock()
         mock_gcs.bucket = mock_bucket
         mock_gcs.get_cached_score.return_value = None
-        mock_gcs.download_to_temp_file.return_value = "/tmp/fake-transcript.txt"
+        mock_gcs.download_to_temp_file.return_value = temp_path
         mock_gcs.cleanup_temp_files.return_value = None
 
         meeting_id = "test-meeting-id"
@@ -172,7 +177,7 @@ class TestProcessPipelineRoutingGuarantee(unittest.TestCase):
                           new_callable=AsyncMock) as mock_talent_bq:
 
             transcript_stub = SimpleNamespace(
-                meeting_id=meeting_id, granola_note_id=None
+                meeting_id=transcript_meeting_id, granola_note_id=granola_note_id
             )
             mock_granola.return_value.parse_file.return_value = transcript_stub
             mock_plaintext.return_value.parse_file.return_value = transcript_stub
@@ -248,6 +253,35 @@ class TestProcessPipelineRoutingGuarantee(unittest.TestCase):
         m["talent_bq"].assert_not_called()
         m["client_scorer_cls"].assert_not_called()
         m["talent_scorer_cls"].assert_not_called()
+
+    def test_poison_meeting_id_fails_without_scoring_or_write(self):
+        """If the importer falls back to the temp-file stem as meeting_id
+        (no granola_note_id), refuse to score or write — fail loudly."""
+        status, m = self._run_pipeline(
+            {"source": "talent"},
+            temp_path="/tmp/tmpqm_h4lle.txt",
+            transcript_meeting_id="tmpqm_h4lle",   # == temp stem -> poison
+            granola_note_id=None,
+        )
+        self.assertEqual(status.status, "failed")
+        self.assertIn("meeting_id", (status.error or "").lower())
+        # No scorer instantiated, no BQ write — the guard fires before both.
+        m["talent_scorer_cls"].assert_not_called()
+        m["client_scorer_cls"].assert_not_called()
+        m["talent_bq"].assert_not_called()
+        m["client_bq"].assert_not_called()
+
+    def test_real_granola_id_not_treated_as_poison(self):
+        """A real granola_note_id distinct from the temp stem scores normally."""
+        status, m = self._run_pipeline(
+            {"source": "talent"},
+            temp_path="/tmp/tmpqm_h4lle.txt",
+            transcript_meeting_id="tmpqm_h4lle",      # importer stem fallback...
+            granola_note_id="2f7de01e-4196-4d2e-8233-73d0a781a95c",  # ...but real id present
+        )
+        self.assertEqual(status.status, "completed")
+        m["talent_scorer_cls"].assert_called_once()
+        m["talent_bq"].assert_called_once()
 
 
 if __name__ == "__main__":
