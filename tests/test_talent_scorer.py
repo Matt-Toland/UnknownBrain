@@ -355,6 +355,70 @@ class TestTalentScorerStatusInvariants(unittest.TestCase):
         self.assertTrue(cleaned.talent_now.current_employer_hiring_signal)
 
 
+class TestTalentScorerTranscriptFormatting(unittest.TestCase):
+    """
+    `_format_transcript` must make the actual conversation the authoritative
+    source for quotes/facts. Granola Enhanced Notes are an AI summary — when a
+    full transcript exists, the summary is dropped (so it can't be mis-quoted
+    or anchored on); when no transcript exists, it's included but explicitly
+    labelled as a non-verbatim summary.
+    """
+
+    def _scorer(self, mock_openai):
+        from src.scorers import TalentScorer
+        return TalentScorer(model="gpt-5-mini", client_mappings={})
+
+    def _transcript(self, **kwargs):
+        defaults = dict(
+            meeting_id="m1", date=date(2026, 5, 29), source="granola_drive",
+            participants=["Recruiter", "Candidate"], notes=[],
+        )
+        defaults.update(kwargs)
+        return Transcript(**defaults)
+
+    @patch("src.scorers.talent_scorer.OpenAI")
+    def test_full_transcript_present_drops_enhanced_notes(self, mock_openai):
+        scorer = self._scorer(mock_openai)
+        t = self._transcript(
+            full_transcript="Candidate: My day rate is 450 pounds a day.",
+            enhanced_notes="SUMMARY BULLET that must not be quoted",
+        )
+        out = scorer._format_transcript(t)
+        self.assertIn("Full transcript", out)
+        self.assertIn("450 pounds a day", out)
+        # Enhanced notes summary must NOT appear when a transcript is available
+        self.assertNotIn("SUMMARY BULLET that must not be quoted", out)
+        self.assertNotIn("Enhanced notes", out)
+
+    @patch("src.scorers.talent_scorer.OpenAI")
+    def test_enhanced_notes_only_is_labelled_as_summary(self, mock_openai):
+        scorer = self._scorer(mock_openai)
+        t = self._transcript(enhanced_notes="Candidate wants pure design work.")
+        out = scorer._format_transcript(t)
+        self.assertIn("AI-GENERATED SUMMARY", out)
+        self.assertIn("Candidate wants pure design work.", out)
+
+    @patch("src.scorers.talent_scorer.OpenAI")
+    def test_raw_notes_fallback_when_no_transcript_or_summary(self, mock_openai):
+        from src.schemas import Note
+        scorer = self._scorer(mock_openai)
+        t = self._transcript(notes=[Note(speaker="Candidate", text="I just wrapped a contract.")])
+        out = scorer._format_transcript(t)
+        self.assertIn("Conversation notes", out)
+        self.assertIn("I just wrapped a contract.", out)
+
+    @patch("src.scorers.talent_scorer.OpenAI")
+    def test_transcript_char_cap_applied(self, mock_openai):
+        # Cap is 120k chars (raised from 32k, which truncated real calls and
+        # dropped late-conversation comp). A 130k transcript should truncate;
+        # a 40k one (a normal long call) must NOT.
+        scorer = self._scorer(mock_openai)
+        self.assertIn("[Transcript truncated]", scorer._format_transcript(
+            self._transcript(full_transcript="x" * 130000)))
+        self.assertNotIn("[Transcript truncated]", scorer._format_transcript(
+            self._transcript(full_transcript="x" * 40000)))
+
+
 class TestTalentScorerTwoPassFlow(unittest.TestCase):
     """Mock the OpenAI client end-to-end and verify the two-pass call shape."""
 

@@ -538,6 +538,26 @@ async def process_pipeline(
         real_meeting_id = getattr(transcript, 'granola_note_id', None) or getattr(transcript, 'meeting_id', meeting_id)
         print(f"Using real meeting_id: {real_meeting_id} (was: {meeting_id})")
 
+        # Guard against poison keys. The Granola importer falls back to the
+        # parsed file's stem when it can't extract a granola_note_id
+        # (src/importers/granola_drive.py). In this pipeline that file is the
+        # downloaded TEMP file, so the fallback id is a meaningless tempfile
+        # stem (e.g. "tmpqm_h4lle"). Writing a row keyed on that pollutes
+        # meeting_intel with a non-meeting and breaks any join on meeting_id.
+        # If the resolved id is empty or equals the temp-file stem, the
+        # importer fell back -> fail loudly (no scoring, no BQ write) rather
+        # than persist garbage. The transcript stays in GCS for reprocessing.
+        # Domain-agnostic: a metadata-less client upload would poison the
+        # table the same way. (Same fail-loud philosophy as resolve_source.)
+        temp_stem = Path(temp_file_path).stem
+        if not real_meeting_id or str(real_meeting_id) == temp_stem:
+            raise ValueError(
+                f"Unresolvable meeting_id for object={file_path}: granola_note_id "
+                f"missing and meeting_id fell back to the temp-file stem "
+                f"{temp_stem!r}. Refusing to write a poison-keyed row. Likely a "
+                f"malformed or metadata-less upload (no Granola note-id link in body)."
+            )
+
         # 3. Check cache with real meeting_id
         cached_result = gcs.get_cached_score(real_meeting_id, scoring_model, source)
         if cached_result:
