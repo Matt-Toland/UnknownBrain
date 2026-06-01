@@ -357,11 +357,12 @@ class TestTalentScorerStatusInvariants(unittest.TestCase):
 
 class TestTalentScorerTranscriptFormatting(unittest.TestCase):
     """
-    `_format_transcript` must make the actual conversation the authoritative
-    source for quotes/facts. Granola Enhanced Notes are an AI summary — when a
-    full transcript exists, the summary is dropped (so it can't be mis-quoted
-    or anchored on); when no transcript exists, it's included but explicitly
-    labelled as a non-verbatim summary.
+    `_format_transcript` makes the actual conversation the authoritative source
+    for quotes/facts. Hybrid (per the transcript-source investigation): when a
+    full transcript exists, Granola's Enhanced Notes are ALSO included, but as a
+    clearly-labelled SECONDARY REFERENCE for numeric disambiguation only (never
+    quotable, never a source of new facts). When no transcript exists, the
+    summary is the primary source, labelled as a non-verbatim summary.
     """
 
     def _scorer(self, mock_openai):
@@ -377,18 +378,22 @@ class TestTalentScorerTranscriptFormatting(unittest.TestCase):
         return Transcript(**defaults)
 
     @patch("src.scorers.talent_scorer.OpenAI")
-    def test_full_transcript_present_drops_enhanced_notes(self, mock_openai):
+    def test_full_transcript_present_includes_notes_as_secondary_reference(self, mock_openai):
         scorer = self._scorer(mock_openai)
         t = self._transcript(
             full_transcript="Candidate: My day rate is 450 pounds a day.",
-            enhanced_notes="SUMMARY BULLET that must not be quoted",
+            enhanced_notes="Rate: £450/day",
         )
         out = scorer._format_transcript(t)
-        self.assertIn("Full transcript", out)
+        # Transcript is the authoritative section
+        self.assertIn("AUTHORITATIVE", out)
         self.assertIn("450 pounds a day", out)
-        # Enhanced notes summary must NOT appear when a transcript is available
-        self.assertNotIn("SUMMARY BULLET that must not be quoted", out)
-        self.assertNotIn("Enhanced notes", out)
+        # Enhanced notes ARE present, but labelled as a secondary, non-quotable
+        # numeric-disambiguation reference (hybrid).
+        self.assertIn("SECONDARY REFERENCE", out)
+        self.assertIn("£450/day", out)
+        # The transcript must appear before the notes (primacy ordering)
+        self.assertLess(out.index("450 pounds a day"), out.index("£450/day"))
 
     @patch("src.scorers.talent_scorer.OpenAI")
     def test_enhanced_notes_only_is_labelled_as_summary(self, mock_openai):
