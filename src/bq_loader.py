@@ -2,6 +2,8 @@
 
 import json
 import os
+import time
+import uuid
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 
@@ -181,7 +183,7 @@ class BigQueryLoader:
         self.create_dataset_if_not_exists()
         
         # Load data into temporary table first
-        temp_table_id = f"{self.project_id}.{self.dataset_name}.temp_upload_{int(__import__('time').time())}"
+        temp_table_id = f"{self.project_id}.{self.dataset_name}.temp_upload_{int(time.time())}_{uuid.uuid4().hex[:8]}"
         target_table_id = f"{self.project_id}.{self.dataset_name}.{self.table_name}"
         
         job_config = bigquery.LoadJobConfig(
@@ -269,7 +271,7 @@ class BigQueryLoader:
 
         target_table_id = f"{self.project_id}.{self.dataset_name}.{self.new_table_name}"
         temp_table_id = (
-            f"{self.project_id}.{self.dataset_name}.temp_upload_{int(__import__('time').time())}"
+            f"{self.project_id}.{self.dataset_name}.temp_upload_{int(time.time())}_{uuid.uuid4().hex[:8]}"
         )
 
         job_config = bigquery.LoadJobConfig(
@@ -591,7 +593,7 @@ class BigQueryLoader:
         console.print(f"[yellow]Found {duplicate_count} duplicate rows to remove[/yellow]")
         
         # Create temp table with deduplicated data
-        temp_table_id = f"{self.project_id}.{self.dataset_name}.temp_dedup_{int(__import__('time').time())}"
+        temp_table_id = f"{self.project_id}.{self.dataset_name}.temp_dedup_{int(time.time())}_{uuid.uuid4().hex[:8]}"
         
         dedup_query = f"""
         CREATE TABLE `{temp_table_id}` AS
@@ -659,7 +661,7 @@ class BigQueryLoader:
         console.print(f"[yellow]Found {duplicate_count} duplicate rows to remove[/yellow]")
 
         # Create temp table with deduplicated data
-        temp_table_id = f"{self.project_id}.{self.dataset_name}.temp_dedup_{int(__import__('time').time())}"
+        temp_table_id = f"{self.project_id}.{self.dataset_name}.temp_dedup_{int(time.time())}_{uuid.uuid4().hex[:8]}"
 
         dedup_query = f"""
         CREATE TABLE `{temp_table_id}` AS

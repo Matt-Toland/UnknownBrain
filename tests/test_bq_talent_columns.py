@@ -87,15 +87,25 @@ class TestClientWritePathSetsScoringDomain(unittest.TestCase):
             "main.py upload_new_format_to_bigquery must explicitly set scoring_domain='client'",
         )
 
-    def test_main_write_path_includes_talent_placeholders(self):
-        # Talent-specific columns must be present in the row dict (NULL/empty)
-        # so MERGE has values to read.
+    def test_client_write_path_omits_talent_placeholders(self):
+        # The client write path must NOT emit explicit talent-column keys.
+        # Writing Python None serialised to the JSON literal `null` (not SQL
+        # NULL), so `talent_now IS NULL` returned False and misled downstream
+        # IS NULL filters / monitoring. Omitting the keys lets the temp-table
+        # load fill them with proper SQL NULL / empty array on INSERT ROW.
+        # The client MERGE doesn't reference talent columns in its SET clause,
+        # so omitting them is safe.
+        import re
         src = pathlib.Path("main.py").read_text()
-        for col in NEW_COLUMNS - {"scoring_domain"}:
-            self.assertIn(
+        # Scope to the client write path (upload_new_format_to_bigquery), not
+        # the whole file — the talent write path legitimately uses these keys.
+        client_fn = src.split("async def upload_new_format_to_bigquery")[1].split("async def ")[0]
+        talent_cols = NEW_COLUMNS - {"scoring_domain"}
+        for col in talent_cols:
+            self.assertNotIn(
                 f"'{col}'",
-                src,
-                f"main.py BQ row dict missing placeholder for {col}",
+                client_fn,
+                f"client write path should omit talent column {col!r} (it lands as SQL NULL via INSERT ROW)",
             )
 
 
