@@ -735,20 +735,16 @@ async def upload_new_format_to_bigquery(
             # `client_info.domain` (client business sector).
             'scoring_domain': 'client',
 
-            # Talent-specific buckets — NULL/empty on client rows. Populated by
-            # the TalentScorer in a future PR.
-            'talent_now': None,
-            'talent_triggers': [],
-            'talent_motivation': None,
-            'talent_market': None,
-            'talent_leads': None,
-            'talent_narrative': None,
-
-            # Per-client intelligence extensions — empty on client rows until
-            # the TalentScorer populates them.
-            'mentioned_companies': [],
-            'perception_themes': [],
-            'articulated_blockers': [],
+            # NOTE: the talent-domain columns (talent_now/triggers/motivation/
+            # market/leads/narrative + mentioned_companies/perception_themes/
+            # articulated_blockers) are deliberately OMITTED from this row dict.
+            # The client MERGE (merge_client_jsonl_data) doesn't touch them in
+            # its SET clause, and the temp-table load fills omitted columns with
+            # SQL NULL (nullable) / empty array (repeated) on INSERT ROW. Writing
+            # them explicitly as Python None serialised to the JSON literal
+            # `null` — which is NOT SQL NULL, so `talent_now IS NULL` returned
+            # False and tripped up downstream IS NULL filters / monitoring.
+            # Omitting them yields proper SQL NULL.
         }
 
         # Add sales assessment fields if available (all nullable)
