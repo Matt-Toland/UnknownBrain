@@ -60,8 +60,13 @@ You analyse recruiter-to-candidate conversation transcripts and extract structur
 
 Rules:
 - Only return facts supported by the transcript. If a field cannot be inferred, set it to null (Optional fields) or an empty list (List fields).
-- Your source of truth is the actual conversation — the section labelled "Full transcript" (or "Conversation notes" when no transcript is available). Extract ALL factual detail from there: comp figures, dates, notice periods, company names, etc. A meeting may also include an "Enhanced notes" section — that is an AI-generated SUMMARY, a paraphrase that often omits or compresses detail. Use it only to orient yourself; NEVER quote from it and NEVER treat its absence of a detail as evidence the detail wasn't said. When the transcript and the summary disagree, the transcript wins.
-- All `evidence_quote` fields must be VERBATIM from the actual conversation (the "Full transcript" / "Conversation notes" section) — copy the candidate's or recruiter's own words exactly, never a summary's paraphrase. Do not paraphrase.
+- Your source of truth is the actual conversation — the section labelled "Full transcript" (or "Conversation notes" when no transcript is available). Extract ALL factual detail from there: comp figures, dates, notice periods, company names, etc. Treat the transcript as authoritative for coverage and quotes, and NEVER treat the absence of a detail from any summary as evidence it wasn't said.
+- A meeting may also include an "Enhanced notes" section — Granola's AI summary. It is a SECONDARY REFERENCE with exactly one job: fixing NUMERIC values (comp, rates, salaries) that the transcript renders garbled or ambiguous. Automatic speech recognition routinely mangles spoken numbers. For EVERY comp/rate/salary figure, before you record it: if the transcript value looks implausible or unanchored for a professional context, you MUST check the Enhanced notes for the same figure and use the Enhanced notes' coherent value. Treat these as garbled and defer to the notes:
+    • decimal-place errors — transcript "standard is $4.50" + notes "Rate: £450/day" → record "£450/day"; transcript "$1.25 an hour" + notes "$125/hour" → record "$125/hour"; transcript "$1.30" + notes "$130/hour" → record "$130/hour".
+    • spoken number-words — transcript "I sit around four fifty" + notes "£450/day" → record "£450/day".
+    • bare numbers with no currency/scale — transcript "upwards of 30" + notes "£30k" → record "£30k"; transcript "45 up to 50" + notes "£45K-50K" → record "£45K-50K".
+  Only when the Enhanced notes have NO version of that figure does the raw transcript value stand. The evidence_quote always stays the transcript's own words (even if garbled). Do NOT import any non-numeric fact (company, role, motivation, etc.) that appears only in the Enhanced notes — the licence to use the notes is for numeric VALUES only.
+- All `evidence_quote` fields must be VERBATIM from the actual conversation (the "Full transcript" / "Conversation notes" section) — copy the candidate's or recruiter's own words exactly. NEVER quote, paraphrase, or lift a phrase from the Enhanced notes summary. This holds even when you took a numeric VALUE from the Enhanced notes: the value may be the disambiguated figure, but the `evidence_quote` must still be the candidate's own words from the transcript (even if those words contain the garbled number).
 - Use only the values defined by the controlled vocabularies for Literal-typed fields.
 - `talent_triggers` should be 1-3 short phrases describing the top reasons the candidate is open to moving. If they are not actively open, return an empty list.
 - `talent_market.openness_to_move` uses a 1–5 scale: 1=not looking at all, 2=passive, 3=open if right opportunity arrives, 4=actively considering, 5=actively interviewing. Use the integer that best fits; null if not inferable.
@@ -463,19 +468,25 @@ class TalentScorer:
             f"Participants: {', '.join(transcript.participants) if transcript.participants else 'Unknown'}\n"
         )
 
-        # Source priority: the actual conversation is authoritative. Granola's
-        # "Enhanced Notes" are an AI-generated SUMMARY of the call, not real
-        # speech — quoting them breaks the verbatim guarantee, and anchoring on
-        # them drops detail that only exists in the raw conversation (e.g. a
-        # candidate's second comp figure stated mid-call but omitted from the
-        # summary). So:
-        #   - full transcript present  -> use it as the SOLE source; do NOT
-        #     include enhanced notes (nothing to mis-quote or anchor on).
-        #   - no full transcript       -> fall back to enhanced notes, clearly
-        #     labelled as a summary so the model knows quotes are best-effort.
-        #   - neither                  -> fall back to raw speaker-tagged notes.
+        # Source roles (hybrid — see the investigation in
+        # Changes/TRANSCRIPT_SOURCE_FINDINGS.md):
+        #   - Full transcript: the AUTHORITATIVE source for coverage, all facts,
+        #     and every verbatim evidence_quote. It carries detail the summary
+        #     drops (e.g. a perm-equivalent comp figure stated late in the call).
+        #   - Enhanced Notes: Granola's AI summary. It is NOT quotable and must
+        #     never introduce facts absent from the transcript — BUT across 23
+        #     real calls it corrected ASR-mangled NUMERIC values ~5:1 vs dropping
+        #     them, and never once contradicted a clean transcript value (failure
+        #     mode is omission, never corruption). So when a transcript number is
+        #     garbled (decimal-place ASR like "$4.50" for a day rate, a spoken
+        #     number-word, or a bare figure with no currency/scale), the summary
+        #     is a reliable tie-breaker. We include it as a clearly-labelled
+        #     SECONDARY reference for numeric disambiguation only.
+        # When no full transcript exists, the summary becomes the primary source
+        # (quotes are best-effort then); raw notes are the final fallback.
         body_chunks: list[str] = []
-        if transcript.full_transcript and transcript.full_transcript.strip():
+        has_transcript = bool(transcript.full_transcript and transcript.full_transcript.strip())
+        if has_transcript:
             ft = transcript.full_transcript.strip()
             # gpt-5* has a 400k-token context window (~1.6M chars), so the
             # transcript is nowhere near the real constraint. The previous 32k
@@ -490,9 +501,18 @@ class TalentScorer:
             if len(ft) > cap:
                 ft = ft[:cap] + "\n...\n[Transcript truncated]"
             body_chunks.append(
-                "Full transcript (the actual conversation — your sole source for "
-                "facts and verbatim quotes):\n" + ft
+                "Full transcript (the actual conversation — your AUTHORITATIVE "
+                "source for facts and verbatim quotes):\n" + ft
             )
+            # Secondary numeric-disambiguation reference (never quotable).
+            if transcript.enhanced_notes and transcript.enhanced_notes.strip():
+                body_chunks.append(
+                    "Enhanced notes (Granola's AI summary — SECONDARY REFERENCE "
+                    "ONLY; use solely to disambiguate garbled/ambiguous NUMERIC "
+                    "values in the transcript above; never quote it and never add "
+                    "facts not present in the transcript):\n"
+                    + transcript.enhanced_notes.strip()
+                )
         elif transcript.enhanced_notes and transcript.enhanced_notes.strip():
             body_chunks.append(
                 "Enhanced notes (AI-GENERATED SUMMARY — no full transcript "
