@@ -51,8 +51,21 @@ logger = logging.getLogger(__name__)
 # each with verbatim evidence_quote strings). 4000 tokens was empirically
 # too tight on a 10KB transcript — saw truncation mid-string. 8000 gives
 # headroom and is still ~$0.02/call on gpt-5-mini.
-TALENT_DEFAULT_MAX_OUTPUT_TOKENS = int(os.getenv("TALENT_LLM_MAX_TOKENS", "8000"))
+# Pass-1 max output must cover reasoning tokens + the structured payload. On
+# the Responses API, reasoning tokens count against max_output_tokens, so when
+# we raise reasoning effort (below) we must raise this too or the structured
+# JSON truncates mid-string. 16000 leaves comfortable room for medium-effort
+# reasoning (~few thousand tokens) plus a ~1-2k-token extraction.
+TALENT_DEFAULT_MAX_OUTPUT_TOKENS = int(os.getenv("TALENT_LLM_MAX_TOKENS", "16000"))
 TALENT_NARRATIVE_MAX_OUTPUT_TOKENS = int(os.getenv("TALENT_NARRATIVE_MAX_TOKENS", "800"))
+
+# Reasoning effort for Pass-1 structured extraction. The comp disambiguation
+# ("is this transcript number garbled? does the summary have a coherent
+# version?") is a genuine reasoning task; at `minimal` it fired only ~60% of
+# the time at batch scale. `medium` gives the model room to actually do the
+# cross-reference. Narrative (Pass 2) stays minimal — it's prose synthesis,
+# not reasoning. Env-overridable so we can dial it back if cost/latency bites.
+TALENT_PASS1_REASONING_EFFORT = os.getenv("TALENT_PASS1_REASONING_EFFORT", "medium")
 
 
 SYSTEM_INSTRUCTION_PASS1 = """\
@@ -304,7 +317,7 @@ class TalentScorer:
                 model=self.model,
                 input=combined,
                 text_format=TalentStructuredExtraction,
-                reasoning={"effort": "minimal"},
+                reasoning={"effort": TALENT_PASS1_REASONING_EFFORT},
                 max_output_tokens=self.max_output_tokens,
             )
             parsed = response.output_parsed
