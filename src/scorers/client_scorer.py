@@ -187,7 +187,17 @@ class ClientScorer:
     def __init__(self, model: str = None):
         # Set longer timeout for GPT-5 models which need more time for reasoning
         timeout = 120.0  # 2 minutes for reasoning models
-        self.client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"), timeout=timeout)
+        # max_retries: the SDK retries transient errors (timeout/429/5xx) with
+        # exponential backoff. Raised from the default 2 so a transient OpenAI
+        # hiccup during scoring doesn't surface as a dropped meeting now that the
+        # poller is the sole writer. (The talent scorer owns retries explicitly
+        # via call_with_transient_retry; this path keeps its existing retry_count
+        # logic and leans on the SDK for the transient layer.)
+        self.client = OpenAI(
+            api_key=os.getenv("OPENAI_API_KEY"),
+            timeout=timeout,
+            max_retries=int(os.getenv("OPENAI_MAX_RETRIES", "5")),
+        )
         self.model = model or os.getenv("DEFAULT_LLM_MODEL", "gpt-4o-mini")
         self.temperature = float(os.getenv("LLM_TEMPERATURE", "0.1"))
         self.max_tokens = int(os.getenv("LLM_MAX_TOKENS", "500"))

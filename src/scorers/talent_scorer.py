@@ -31,6 +31,7 @@ from dotenv import load_dotenv
 from openai import OpenAI
 
 from ..cost_logger import log_llm_call
+from ..llm_retry import call_with_transient_retry
 from ..schemas import (
     CompStructured,
     Transcript,
@@ -266,7 +267,10 @@ class TalentScorer:
         client_mappings: Optional[Dict[str, str]] = None,
     ):
         # Longer timeout for reasoning models, matching ClientScorer.
-        self.client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"), timeout=120.0)
+        # max_retries=0: we own retries via call_with_transient_retry (bounded
+        # exponential backoff) so the retry policy is explicit, testable, and the
+        # SDK's default 2 retries don't compound with ours.
+        self.client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"), timeout=120.0, max_retries=0)
         self.model = model or os.getenv("DEFAULT_LLM_MODEL", "gpt-5-mini")
         self.max_output_tokens = TALENT_DEFAULT_MAX_OUTPUT_TOKENS
         self.narrative_max_output_tokens = TALENT_NARRATIVE_MAX_OUTPUT_TOKENS
@@ -365,23 +369,29 @@ class TalentScorer:
             # can burn the whole budget on hidden reasoning and truncate the
             # actual structured payload mid-string.
             combined = f"{SYSTEM_INSTRUCTION_PASS1}\n\n{user_content}"
-            response = self.client.responses.parse(
-                model=self.model,
-                input=combined,
-                text_format=TalentStructuredExtraction,
-                reasoning={"effort": TALENT_PASS1_REASONING_EFFORT},
-                max_output_tokens=self.max_output_tokens,
+            response = call_with_transient_retry(
+                lambda: self.client.responses.parse(
+                    model=self.model,
+                    input=combined,
+                    text_format=TalentStructuredExtraction,
+                    reasoning={"effort": TALENT_PASS1_REASONING_EFFORT},
+                    max_output_tokens=self.max_output_tokens,
+                ),
+                label=f"talent_pass1[{meeting_id}]",
             )
             parsed = response.output_parsed
         else:
             # Chat Completions parse helper (gpt-4o family + structured-output-capable variants)
-            response = self.client.beta.chat.completions.parse(
-                model=self.model,
-                messages=[
-                    {"role": "system", "content": SYSTEM_INSTRUCTION_PASS1},
-                    {"role": "user", "content": user_content},
-                ],
-                response_format=TalentStructuredExtraction,
+            response = call_with_transient_retry(
+                lambda: self.client.beta.chat.completions.parse(
+                    model=self.model,
+                    messages=[
+                        {"role": "system", "content": SYSTEM_INSTRUCTION_PASS1},
+                        {"role": "user", "content": user_content},
+                    ],
+                    response_format=TalentStructuredExtraction,
+                ),
+                label=f"talent_pass1[{meeting_id}]",
             )
             parsed = response.choices[0].message.parsed
 
@@ -410,21 +420,27 @@ class TalentScorer:
 
         if self.model.startswith("gpt-5") or self.model.startswith("o1"):
             combined = f"{SYSTEM_INSTRUCTION_PASS2}\n\n{user_content}"
-            response = self.client.responses.create(
-                model=self.model,
-                input=combined,
-                reasoning={"effort": "minimal"},
-                max_output_tokens=self.narrative_max_output_tokens,
+            response = call_with_transient_retry(
+                lambda: self.client.responses.create(
+                    model=self.model,
+                    input=combined,
+                    reasoning={"effort": "minimal"},
+                    max_output_tokens=self.narrative_max_output_tokens,
+                ),
+                label=f"talent_pass2[{meeting_id}]",
             )
             text = (response.output_text or "").strip()
         else:
-            response = self.client.chat.completions.create(
-                model=self.model,
-                messages=[
-                    {"role": "system", "content": SYSTEM_INSTRUCTION_PASS2},
-                    {"role": "user", "content": user_content},
-                ],
-                max_tokens=self.narrative_max_output_tokens,
+            response = call_with_transient_retry(
+                lambda: self.client.chat.completions.create(
+                    model=self.model,
+                    messages=[
+                        {"role": "system", "content": SYSTEM_INSTRUCTION_PASS2},
+                        {"role": "user", "content": user_content},
+                    ],
+                    max_tokens=self.narrative_max_output_tokens,
+                ),
+                label=f"talent_pass2[{meeting_id}]",
             )
             text = (response.choices[0].message.content or "").strip()
 
