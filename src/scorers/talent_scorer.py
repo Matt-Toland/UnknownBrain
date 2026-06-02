@@ -32,6 +32,7 @@ from openai import OpenAI
 
 from ..cost_logger import log_llm_call
 from ..schemas import (
+    CompStructured,
     Transcript,
     TalentScoringResult,
     TalentStructuredExtraction,
@@ -66,6 +67,30 @@ TALENT_NARRATIVE_MAX_OUTPUT_TOKENS = int(os.getenv("TALENT_NARRATIVE_MAX_TOKENS"
 # cross-reference. Narrative (Pass 2) stays minimal — it's prose synthesis,
 # not reasoning. Env-overridable so we can dial it back if cost/latency bites.
 TALENT_PASS1_REASONING_EFFORT = os.getenv("TALENT_PASS1_REASONING_EFFORT", "medium")
+
+
+# Plausibility bounds for structured comp, keyed by period. Comp feeds aggregate
+# salary-trend stats, so the bar is "garbage excludable," not per-candidate
+# precision. The ranges are deliberately wide and currency-agnostic: GBP/USD/EUR
+# sit within ~1.5x of each other, so a garbled ASR figure (a £450/day rate heard
+# as "$4.50", or $125/hour heard as "$1.25") falls orders of magnitude outside
+# the band regardless of currency, while every real professional figure sits
+# comfortably inside. Read at call time so tests / ops can override via env.
+def _comp_bounds() -> Dict[str, tuple]:
+    return {
+        "day": (
+            float(os.getenv("COMP_PLAUSIBLE_DAY_MIN", "50")),
+            float(os.getenv("COMP_PLAUSIBLE_DAY_MAX", "5000")),
+        ),
+        "hour": (
+            float(os.getenv("COMP_PLAUSIBLE_HOUR_MIN", "5")),
+            float(os.getenv("COMP_PLAUSIBLE_HOUR_MAX", "500")),
+        ),
+        "year": (
+            float(os.getenv("COMP_PLAUSIBLE_YEAR_MIN", "10000")),
+            float(os.getenv("COMP_PLAUSIBLE_YEAR_MAX", "2000000")),
+        ),
+    }
 
 
 SYSTEM_INSTRUCTION_PASS1 = """\
@@ -149,6 +174,28 @@ Six buckets to populate:
      Do not convert between shapes (no day-rate → annual conversion). Do not
      invent or fabricate comp values. Record exactly what the candidate said,
      in their words; if unclear or absent, set the field to null.
+
+     Structured comp: ALSO emit `current_comp_structured` and
+     `expected_comp_structured` alongside the free-text strings — the parsed
+     form of the SAME figure, for aggregate salary-trend reporting. Each is an
+     object {currency, amount_min, amount_max, period, basis}:
+       - currency ∈ GBP | USD | EUR | other — infer from the symbol (£/$/€) or
+         context ("pounds", "dollars"); null only if genuinely unknowable.
+       - amount_min / amount_max — the numeric value(s) in the stated unit,
+         with k-suffixes expanded ("£80k" → 80000) and separators stripped
+         ("$1,900" → 1900). For a single value set min = max. For a range
+         ("£45–50k") set min=45000, max=50000.
+       - period ∈ day | hour | year — the unit the amount is expressed in
+         (day rate → day, hourly → hour, salary → year); use `other` for
+         anything that doesn't fit (e.g. a pure equity reference) and null if
+         no unit is stated.
+       - basis — short label for what the figure covers: "base", "base+bonus",
+         "total", "equity-heavy", etc. Null if not stated.
+     Use the SAME disambiguated number you recorded in the free-text field (if
+     you deferred to the Enhanced notes for a garbled figure, parse the
+     corrected value here too). If a comp string is absent, set its
+     `*_structured` to null. DO NOT set a `plausible` field — leave it out
+     entirely; it is computed downstream in code, not by you.
 
      `realistic_time_to_move` also captures explicit legal or availability
      constraints as free text — e.g. "non-compete with [employer] ends [date]",
@@ -279,6 +326,11 @@ class TalentScorer:
         # obedience. A code-side cleanup guarantees cross-consumer consistency
         # downstream.)
         extraction = self._enforce_status_invariants(extraction)
+
+        # Flag structured-comp plausibility deterministically (the LLM emits the
+        # parsed figures but never self-assesses plausibility — code does that, so
+        # garbled ASR values are excludable from aggregates).
+        extraction = self._flag_comp_plausibility(extraction)
 
         # Pass 2 — narrative summary, fed the canonicalised Pass-1 output (not the raw transcript)
         narrative = self._run_narrative_pass(extraction, transcript.meeting_id)
@@ -431,6 +483,47 @@ class TalentScorer:
             now.company_discipline = None
             now.company_industry = None
             now.current_employer_hiring_signal = None
+        return extraction
+
+    # ---------------------------------------------------------------------
+    # Structured-comp plausibility flag (deterministic, code-side)
+    # ---------------------------------------------------------------------
+    @staticmethod
+    def _flag_comp_plausibility(
+        extraction: TalentStructuredExtraction,
+    ) -> TalentStructuredExtraction:
+        """
+        Set `plausible` on each CompStructured the model emitted. The LLM is told
+        NOT to self-assess plausibility; we decide deterministically so a garbled
+        figure can be excluded from aggregate stats with a consistent rule.
+
+        Per-period sane ranges (see `_comp_bounds`):
+          - day:  ~£50–£5,000      (catches an ASR "$4.50" day rate)
+          - hour: ~£5–£500         (catches an ASR "$1.25/hour")
+          - year: ~£10,000–£2,000,000
+
+        Rules:
+          - No amount at all (amount_min and amount_max both None) → plausible=None
+            (unknown, not flagged false — we have nothing to judge).
+          - period not in the bounded set (None / "other") → plausible=None
+            (no band to test against; don't assert false on an un-unitable figure).
+          - Otherwise plausible iff EVERY present bound sits within the band.
+            A range is implausible if either end falls outside.
+        """
+        bounds = _comp_bounds()
+
+        def flag(comp: Optional[CompStructured]) -> None:
+            if comp is None:
+                return
+            amounts = [a for a in (comp.amount_min, comp.amount_max) if a is not None]
+            if not amounts or comp.period not in bounds:
+                comp.plausible = None
+                return
+            lo, hi = bounds[comp.period]
+            comp.plausible = all(lo <= a <= hi for a in amounts)
+
+        flag(extraction.talent_market.current_comp_structured)
+        flag(extraction.talent_market.expected_comp_structured)
         return extraction
 
     # ---------------------------------------------------------------------

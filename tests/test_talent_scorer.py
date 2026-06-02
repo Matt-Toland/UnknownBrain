@@ -28,6 +28,7 @@ from src.schemas import (
     TalentMotivation,
     TalentNow,
     TalentMarket,
+    CompStructured,
     TalentLeads,
     MentionedCompany,
     PerceptionTheme,
@@ -490,6 +491,152 @@ class TestTalentScorerTwoPassFlow(unittest.TestCase):
         self.assertIn("primary_driver", narrative_input)
         # Must NOT contain the raw transcript body — that would defeat Pass 2's purpose
         self.assertNotIn("Initial chat with senior designer", narrative_input)
+
+
+class TestCompStructuredSchema(unittest.TestCase):
+    """Structured comp validates its controlled vocabularies and nests in TalentMarket."""
+
+    def test_valid_comp_structured_constructs(self):
+        c = CompStructured(
+            currency="GBP", amount_min=450, amount_max=450, period="day", basis="total"
+        )
+        self.assertEqual(c.currency, "GBP")
+        self.assertEqual(c.period, "day")
+        # plausible is unset by default — code computes it later
+        self.assertIsNone(c.plausible)
+
+    def test_invalid_currency_raises(self):
+        with self.assertRaises(ValidationError):
+            CompStructured(currency="BTC", amount_min=1, period="day")
+
+    def test_invalid_period_raises(self):
+        with self.assertRaises(ValidationError):
+            CompStructured(amount_min=1, period="fortnight")
+
+    def test_nests_in_talent_market(self):
+        m = TalentMarket(
+            current_comp="£450/day",
+            current_comp_structured=CompStructured(
+                currency="GBP", amount_min=450, amount_max=450, period="day"
+            ),
+        )
+        self.assertEqual(m.current_comp_structured.amount_min, 450)
+        # Round-trips through model_dump(mode="json") — the BQ write path uses this
+        dumped = m.model_dump(mode="json")
+        self.assertEqual(dumped["current_comp_structured"]["period"], "day")
+        self.assertIsNone(dumped["expected_comp_structured"])
+
+
+class TestCompPlausibilityFlag(unittest.TestCase):
+    """`_flag_comp_plausibility` is the deterministic code-side plausibility gate."""
+
+    def _extraction_with(self, current=None, expected=None):
+        return TalentStructuredExtraction(
+            talent_now=TalentNow(role="Designer"),
+            talent_triggers=[],
+            talent_motivation=TalentMotivation(
+                primary_driver="progression", better_description="x"
+            ),
+            talent_market=TalentMarket(
+                current_comp_structured=current, expected_comp_structured=expected
+            ),
+            talent_leads=TalentLeads(companies_mentioned=[]),
+            mentioned_companies=[],
+            perception_themes=[],
+            articulated_blockers=[],
+        )
+
+    @patch("src.scorers.talent_scorer.OpenAI")
+    def _scorer(self, mock_openai):
+        from src.scorers import TalentScorer
+        return TalentScorer(model="gpt-5-mini", client_mappings={})
+
+    def setUp(self):
+        self.scorer = self._scorer()
+
+    def test_sane_day_rate_is_plausible(self):
+        ex = self._extraction_with(
+            current=CompStructured(currency="GBP", amount_min=450, amount_max=450, period="day")
+        )
+        out = self.scorer._flag_comp_plausibility(ex)
+        self.assertTrue(out.talent_market.current_comp_structured.plausible)
+
+    def test_garbled_decimal_day_rate_is_implausible(self):
+        # ASR "$4.50" for a £450/day rate — the exact failure mode this catches.
+        ex = self._extraction_with(
+            current=CompStructured(currency="USD", amount_min=4.5, amount_max=4.5, period="day")
+        )
+        out = self.scorer._flag_comp_plausibility(ex)
+        self.assertFalse(out.talent_market.current_comp_structured.plausible)
+
+    def test_garbled_decimal_hourly_is_implausible(self):
+        # ASR "$1.25/hour" for $125/hour.
+        ex = self._extraction_with(
+            current=CompStructured(currency="USD", amount_min=1.25, amount_max=1.25, period="hour")
+        )
+        out = self.scorer._flag_comp_plausibility(ex)
+        self.assertFalse(out.talent_market.current_comp_structured.plausible)
+
+    def test_sane_salary_is_plausible(self):
+        ex = self._extraction_with(
+            expected=CompStructured(currency="USD", amount_min=130000, amount_max=130000, period="year")
+        )
+        out = self.scorer._flag_comp_plausibility(ex)
+        self.assertTrue(out.talent_market.expected_comp_structured.plausible)
+
+    def test_range_implausible_if_either_end_outside(self):
+        # min sane, max absurd → implausible (a range is only plausible if both ends fit).
+        ex = self._extraction_with(
+            current=CompStructured(currency="GBP", amount_min=400, amount_max=9_000_000, period="day")
+        )
+        out = self.scorer._flag_comp_plausibility(ex)
+        self.assertFalse(out.talent_market.current_comp_structured.plausible)
+
+    def test_none_amount_yields_none_not_false(self):
+        # No number to judge → unknown, not flagged false.
+        ex = self._extraction_with(
+            current=CompStructured(currency="GBP", amount_min=None, amount_max=None, period="day")
+        )
+        out = self.scorer._flag_comp_plausibility(ex)
+        self.assertIsNone(out.talent_market.current_comp_structured.plausible)
+
+    def test_unbounded_period_yields_none(self):
+        # period "other"/None has no band — don't assert false on an un-unitable figure.
+        ex = self._extraction_with(
+            current=CompStructured(currency="GBP", amount_min=50000, amount_max=50000, period="other")
+        )
+        out = self.scorer._flag_comp_plausibility(ex)
+        self.assertIsNone(out.talent_market.current_comp_structured.plausible)
+
+    def test_missing_structured_is_noop(self):
+        ex = self._extraction_with(current=None, expected=None)
+        out = self.scorer._flag_comp_plausibility(ex)
+        self.assertIsNone(out.talent_market.current_comp_structured)
+        self.assertIsNone(out.talent_market.expected_comp_structured)
+
+    def test_thresholds_env_overridable(self):
+        # Tighten the day band so a normally-plausible 450 falls outside.
+        ex = self._extraction_with(
+            current=CompStructured(currency="GBP", amount_min=450, amount_max=450, period="day")
+        )
+        with patch.dict(os.environ, {"COMP_PLAUSIBLE_DAY_MAX": "100"}):
+            out = self.scorer._flag_comp_plausibility(ex)
+        self.assertFalse(out.talent_market.current_comp_structured.plausible)
+
+
+class TestPass1PromptEmitsStructuredComp(unittest.TestCase):
+    """The Pass-1 prompt must instruct the model to emit structured comp but not plausibility."""
+
+    def test_prompt_mentions_structured_fields(self):
+        from src.scorers.talent_scorer import PROMPT_PASS1
+        self.assertIn("current_comp_structured", PROMPT_PASS1)
+        self.assertIn("expected_comp_structured", PROMPT_PASS1)
+
+    def test_prompt_tells_model_not_to_set_plausible(self):
+        from src.scorers.talent_scorer import PROMPT_PASS1
+        self.assertIn("plausible", PROMPT_PASS1)
+        # mentioned in the context of "do not set"/"computed downstream"
+        self.assertIn("computed downstream in code", PROMPT_PASS1)
 
 
 if __name__ == "__main__":

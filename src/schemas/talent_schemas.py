@@ -79,9 +79,51 @@ class TalentMotivation(BaseModel):
 # ---------------------------------------------------------------------------
 # Bucket 4 — Market reality: comp, notice, openness
 # ---------------------------------------------------------------------------
+CompCurrency = Literal["GBP", "USD", "EUR", "other"]
+CompPeriod = Literal["day", "hour", "year", "other"]
+
+
+class CompStructured(BaseModel):
+    """
+    Structured form of a free-text comp string, for aggregate statistics
+    (salary-trend reporting by role/type), NOT recruiter filtering.
+
+    The LLM emits everything EXCEPT `plausible` — that is computed
+    deterministically in code (TalentScorer._flag_comp_plausibility) so a
+    garbled figure (ASR decimal-place error like "$4.50/day") can be excluded
+    from aggregates without relying on the model to self-assess.
+    """
+    currency: Optional[CompCurrency] = Field(
+        None, description="Currency of the figure; infer from symbol/context where possible"
+    )
+    amount_min: Optional[float] = Field(
+        None, description="Lower bound in the stated unit; equals amount_max for a single value"
+    )
+    amount_max: Optional[float] = Field(
+        None, description="Upper bound in the stated unit; equals amount_min for a single value"
+    )
+    period: Optional[CompPeriod] = Field(
+        None, description="Unit the amount is expressed in: per day, per hour, per year"
+    )
+    basis: Optional[str] = Field(
+        None,
+        description="What the figure covers: 'base' / 'base+bonus' / 'total' / 'equity-heavy' etc.",
+    )
+    plausible: Optional[bool] = Field(
+        None,
+        description="COMPUTED IN CODE — do not set. Whether the amount is in a sane range for its period.",
+    )
+
+
 class TalentMarket(BaseModel):
     current_comp: Optional[str] = Field(None, description="Current compensation (base + bonus + equity, free-text)")
     expected_comp: Optional[str] = Field(None, description="Expected compensation in next role")
+    current_comp_structured: Optional[CompStructured] = Field(
+        None, description="Structured form of current_comp (LLM-emitted; `plausible` set in code)"
+    )
+    expected_comp_structured: Optional[CompStructured] = Field(
+        None, description="Structured form of expected_comp (LLM-emitted; `plausible` set in code)"
+    )
     notice_period: Optional[str] = Field(None, description="Notice period at current employer")
     openness_to_move: Optional[int] = Field(
         None, ge=1, le=5, description="1=not looking, 5=actively interviewing"
