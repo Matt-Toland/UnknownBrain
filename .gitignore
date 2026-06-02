@@ -41,6 +41,9 @@ data/json_new_unscored/
 out/*
 !out/.gitkeep
 
+# Working notes / session artifacts (real candidate PII — never commit)
+Changes/
+
 # Logs
 *.log
 logs/
