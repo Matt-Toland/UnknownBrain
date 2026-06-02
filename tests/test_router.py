@@ -139,7 +139,8 @@ class TestProcessPipelineRoutingGuarantee(unittest.TestCase):
     """
 
     def _run_pipeline(self, blob_metadata, *, temp_path="/tmp/fake-transcript.txt",
-                      transcript_meeting_id="test-meeting-id", granola_note_id=None):
+                      transcript_meeting_id="test-meeting-id", granola_note_id=None,
+                      claim_result=True):
         """Drive process_pipeline once with a mocked GCS blob.
         Returns (status, mocks_dict) where mocks_dict exposes both BQ
         writers and both scorer classes for assertions.
@@ -157,6 +158,7 @@ class TestProcessPipelineRoutingGuarantee(unittest.TestCase):
         mock_gcs = MagicMock()
         mock_gcs.bucket = mock_bucket
         mock_gcs.get_cached_score.return_value = None
+        mock_gcs.claim_meeting.return_value = claim_result  # concurrency claim
         mock_gcs.download_to_temp_file.return_value = temp_path
         mock_gcs.cleanup_temp_files.return_value = None
 
@@ -266,6 +268,17 @@ class TestProcessPipelineRoutingGuarantee(unittest.TestCase):
         self.assertEqual(status.status, "failed")
         self.assertIn("meeting_id", (status.error or "").lower())
         # No scorer instantiated, no BQ write — the guard fires before both.
+        m["talent_scorer_cls"].assert_not_called()
+        m["client_scorer_cls"].assert_not_called()
+        m["talent_bq"].assert_not_called()
+        m["client_bq"].assert_not_called()
+
+    def test_lost_concurrency_claim_skips_scoring_and_write(self):
+        """If claim_meeting returns False (another concurrent delivery won the
+        claim), this task must skip scoring AND the BQ write — preventing the
+        duplicate-row race and the wasted second scoring."""
+        status, m = self._run_pipeline({"source": "talent"}, claim_result=False)
+        self.assertEqual(status.status, "completed")
         m["talent_scorer_cls"].assert_not_called()
         m["client_scorer_cls"].assert_not_called()
         m["talent_bq"].assert_not_called()

@@ -234,6 +234,54 @@ class GCSClient:
         }
 
         return self.upload_results(cache_data, cache_key)
+
+    def _claim_key(self, meeting_id: str, model: str, source: str) -> str:
+        """Date-scoped claim marker path (mirrors the cache key)."""
+        today = datetime.now().strftime('%Y-%m-%d')
+        return f"claims/{today}/{meeting_id}-{model}-{source}.claim"
+
+    def claim_meeting(self, meeting_id: str, model: str, source: str) -> bool:
+        """
+        Atomically claim a meeting for processing.
+
+        Returns True if THIS caller won the claim (should process), False if it
+        was already claimed (another concurrent delivery is handling it — skip).
+
+        Uses GCS create-if-not-exists (`if_generation_match=0`), which is atomic
+        and cross-instance, so two CloudEvent deliveries for the same meeting
+        arriving within the MERGE window can't both proceed and double-insert.
+        The claim is date-scoped (auto-expires daily) like the result cache.
+
+        Fails OPEN: if the claim mechanism itself errors, return True (proceed)
+        rather than block scoring — the dedupe pass is the backstop.
+        """
+        from google.api_core.exceptions import PreconditionFailed
+        key = self._claim_key(meeting_id, model, source)
+        try:
+            blob = self.bucket.blob(key)
+            blob.upload_from_string(
+                json.dumps({'meeting_id': meeting_id, 'claimed_at': datetime.now().isoformat()}),
+                content_type='application/json',
+                if_generation_match=0,  # create-only: raises PreconditionFailed if it already exists
+            )
+            return True
+        except PreconditionFailed:
+            return False
+        except Exception as e:
+            print(f"claim_meeting error for {meeting_id} (failing open, proceeding): {e}")
+            return True
+
+    def release_claim(self, meeting_id: str, model: str, source: str) -> None:
+        """
+        Release a claim so the meeting can be retried. Called on processing
+        FAILURE (a successful run leaves the claim + result cache in place so
+        same-day re-deliveries short-circuit). Non-fatal on error.
+        """
+        key = self._claim_key(meeting_id, model, source)
+        try:
+            self.bucket.blob(key).delete()
+        except Exception as e:
+            print(f"release_claim error for {meeting_id} (non-fatal): {e}")
     
     def cleanup_temp_files(self, temp_paths: List[Path]):
         """

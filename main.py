@@ -498,11 +498,13 @@ async def process_pipeline(
     Background task to process a single transcript through the complete pipeline
     """
     temp_files = []
-    
+    claimed = False  # set True once this task wins the concurrency claim (3.5)
+    gcs = None
+
     try:
         # Update status
         processing_status[meeting_id].status = "processing"
-        
+
         # Initialize GCS client
         gcs = GCSClient(bucket_name=bucket)
         
@@ -572,6 +574,24 @@ async def process_pipeline(
             )
             return
 
+        # 3.5 Atomically claim the meeting before the expensive scoring step.
+        # Eventarc is at-least-once: a single GCS finalize (or a quick re-upload)
+        # can be delivered as two CloudEvents seconds apart. Each spawns a
+        # process_pipeline task; the per-MERGE window (~10-15s) is longer than
+        # that gap, so without a guard both tasks read "no existing row" and
+        # both INSERT -> duplicate. The result cache (step 3) only catches
+        # re-deliveries AFTER the first run completes; for simultaneous runs it
+        # misses. claim_meeting uses GCS create-if-not-exists (atomic,
+        # cross-instance) so exactly one delivery proceeds; the loser skips
+        # before scoring (also saving its LLM cost). On failure we release the
+        # claim so the meeting can retry.
+        if not gcs.claim_meeting(real_meeting_id, scoring_model, source):
+            print(f"Skipping {real_meeting_id}: already claimed by a concurrent delivery")
+            processing_status[meeting_id].status = "completed"
+            processing_status[meeting_id].completed_at = datetime.now().isoformat()
+            return
+        claimed = True
+
         # 4. Score with LLM using new format
         print(f"Scoring with {scoring_model}")
         scorer = get_scorer(source, model=scoring_model)
@@ -630,7 +650,16 @@ async def process_pipeline(
         logger.error(f"Error processing {meeting_id}: {e}", exc_info=True)
         processing_status[meeting_id].status = "failed"
         processing_status[meeting_id].error = str(e)
-    
+        # Release the concurrency claim on failure so the meeting can be retried
+        # (a successful run intentionally leaves the claim + result cache so
+        # same-day re-deliveries short-circuit). gcs/real_meeting_id are in
+        # scope only if we got far enough to claim.
+        if claimed and gcs is not None:
+            try:
+                gcs.release_claim(real_meeting_id, scoring_model, source)
+            except Exception:
+                pass
+
     finally:
         # Clean up temporary files
         if temp_files:
