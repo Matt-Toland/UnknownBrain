@@ -96,6 +96,25 @@ class ProcessingStatus(BaseModel):
 # In-memory status tracking (in production, use Firestore or Redis)
 processing_status: Dict[str, ProcessingStatus] = {}
 
+
+class PermanentProcessingError(Exception):
+    """
+    A failure that retrying will never fix — e.g. an unresolvable/poison
+    meeting_id or missing routing source. The CloudEvent handler ACKs these
+    with a 2xx so Eventarc does NOT redeliver (redelivery would loop forever on
+    bad input). Distinct from transient failures (OpenAI timeout, BQ blip),
+    which return non-2xx so Eventarc DOES redeliver.
+    """
+
+
+# Bounds how many ~90s scorings run concurrently IN THIS PROCESS so a burst of
+# poller-driven CloudEvents can't fan out enough to trip OpenAI rate limits.
+# Cross-instance fan-out is governed separately by Cloud Run max-instances.
+# Scoring is offloaded to a thread (asyncio.to_thread) so the event loop stays
+# responsive to health checks while a scoring is in flight.
+SCORING_MAX_CONCURRENCY = int(os.getenv("SCORING_MAX_CONCURRENCY", "3"))
+_scoring_semaphore = asyncio.Semaphore(SCORING_MAX_CONCURRENCY)
+
 @app.get("/", tags=["Health"])
 async def root():
     """Root endpoint"""
@@ -375,38 +394,61 @@ async def handle_storage_event(
             # Use generation for idempotency (prevents double processing on retries)
             generation = data.get('generation')
             meeting_id = f"auto-{Path(file_name).stem}-{generation or event['id']}"
-            
-            # Check if already processing/processed
-            if meeting_id in processing_status:
-                logger.info(f"Already processing/processed: {meeting_id}")
+
+            # In-memory dedup: only short-circuit while a delivery is actively
+            # in flight or already succeeded. A *failed* (or absent) entry must
+            # fall through so an Eventarc redelivery can RE-RUN it — otherwise a
+            # transient failure would be permanently masked as "duplicate".
+            # (The GCS claim is the real cross-instance dedup; this dict is a
+            # per-instance fast-path only.)
+            existing = processing_status.get(meeting_id)
+            if existing is not None and existing.status in ("pending", "processing", "completed"):
+                logger.info(f"Already processing/processed: {meeting_id} ({existing.status})")
                 return {
                     "status": "duplicate",
                     "meeting_id": meeting_id,
-                    "message": "Already being processed or completed"
+                    "message": f"Already {existing.status}",
                 }
-            
-            # Add to processing queue
+
+            # Mark in-flight
             processing_status[meeting_id] = ProcessingStatus(
                 meeting_id=meeting_id,
                 status="pending",
                 created_at=datetime.now().isoformat()
             )
-            
-            # Process in background
-            background_tasks.add_task(
-                process_pipeline,
+
+            # Process SYNCHRONOUSLY so the HTTP status reflects the real outcome.
+            # Eventarc is at-least-once and redelivers on non-2xx — the old
+            # background-task design returned 200 immediately, so a scoring
+            # failure (e.g. transient OpenAI timeout) was invisible to Eventarc
+            # and the meeting was silently dropped. Now: transient failure ->
+            # 503 (redeliver); success / permanent failure -> 2xx (ack).
+            outcome = await process_pipeline(
                 bucket,
                 file_name,
                 os.getenv("DEFAULT_LLM_MODEL", "gpt-5-mini"),
-                meeting_id
+                meeting_id,
             )
-            
-            logger.info(f"Accepted for processing: {meeting_id}")
+
+            if outcome == "transient_failure":
+                err = getattr(processing_status.get(meeting_id), "error", None)
+                logger.warning(f"Transient failure for {meeting_id}; returning 503 for Eventarc redelivery")
+                return JSONResponse(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    content={
+                        "status": "retry",
+                        "meeting_id": meeting_id,
+                        "file": file_name,
+                        "error": err,
+                    },
+                )
+
+            logger.info(f"Processed {meeting_id}: {outcome}")
             return {
-                "status": "accepted",
+                "status": outcome,
                 "meeting_id": meeting_id,
                 "file": file_name,
-                "generation": generation
+                "generation": generation,
             }
         
         # Ignore non-transcript files
@@ -498,7 +540,8 @@ async def process_pipeline(
     Background task to process a single transcript through the complete pipeline
     """
     temp_files = []
-    claimed = False  # set True once this task wins the concurrency claim (3.5)
+    claimed = False    # set True once this task wins the concurrency claim (3.5)
+    succeeded = False  # set True only on a fully-completed write; gates claim release
     gcs = None
 
     try:
@@ -519,7 +562,12 @@ async def process_pipeline(
         # signals a real bug rather than legacy data.
         blob = gcs.bucket.blob(file_path)
         blob.reload()
-        source = resolve_source(blob.metadata)
+        try:
+            source = resolve_source(blob.metadata)
+        except ValueError as e:
+            # Missing/empty routing source is a permanent data defect — retrying
+            # won't add metadata. ACK so Eventarc stops redelivering.
+            raise PermanentProcessingError(f"Unresolvable source for {file_path}: {e}") from e
         logger.info(f"Processing CloudEvent: object={file_path} source={source}")
 
         # 1. Download file from GCS
@@ -553,7 +601,9 @@ async def process_pipeline(
         # table the same way. (Same fail-loud philosophy as resolve_source.)
         temp_stem = Path(temp_file_path).stem
         if not real_meeting_id or str(real_meeting_id) == temp_stem:
-            raise ValueError(
+            # Poison key — permanent. Redelivering the same malformed blob will
+            # always fall back to a tempfile stem; ACK so Eventarc gives up.
+            raise PermanentProcessingError(
                 f"Unresolvable meeting_id for object={file_path}: granola_note_id "
                 f"missing and meeting_id fell back to the temp-file stem "
                 f"{temp_stem!r}. Refusing to write a poison-keyed row. Likely a "
@@ -572,7 +622,7 @@ async def process_pipeline(
             processing_status[meeting_id].score = cached_result.get("results", {}).get(
                 "total_qualified_sections"
             )
-            return
+            return "cached"
 
         # 3.5 Atomically claim the meeting before the expensive scoring step.
         # Eventarc is at-least-once: a single GCS finalize (or a quick re-upload)
@@ -589,26 +639,35 @@ async def process_pipeline(
             print(f"Skipping {real_meeting_id}: already claimed by a concurrent delivery")
             processing_status[meeting_id].status = "completed"
             processing_status[meeting_id].completed_at = datetime.now().isoformat()
-            return
+            return "duplicate"
         claimed = True
 
-        # 4. Score with LLM using new format
+        # 4. Score with LLM using new format. Bounded by the process-wide
+        # scoring semaphore and run in a worker thread: the OpenAI client is
+        # synchronous (~90s at medium reasoning), so to_thread keeps the event
+        # loop free for health checks, and the semaphore caps concurrent
+        # scorings so a poller burst can't fan out into OpenAI rate limits.
+        # A transient OpenAI error that survives the in-scorer retry policy
+        # (call_with_transient_retry) propagates here -> the except below returns
+        # "transient_failure" (handler -> 503 -> Eventarc retries) and `finally`
+        # releases the claim so the redelivery can re-claim.
         print(f"Scoring with {scoring_model}")
         scorer = get_scorer(source, model=scoring_model)
-        new_score_result = scorer.score_transcript_new(transcript)
+        async with _scoring_semaphore:
+            new_score_result = await asyncio.to_thread(scorer.score_transcript_new, transcript)
 
-        # 4.5 Sales assessment runs ONLY on client transcripts. Talent
-        # transcripts are recruiter↔candidate conversations — there's no
-        # UNKNOWN salesperson behaviour to assess.
-        sales_score_result = None
-        if source == "client" and os.getenv('ENABLE_SALES_SCORING', 'true').lower() == 'true':
-            try:
-                print(f"Performing sales assessment...")
-                sales_score_result = scorer.score_salesperson(transcript)
-                print(f"Sales assessment complete - Score: {sales_score_result.total_score}/24")
-            except Exception as e:
-                print(f"Sales scoring failed (non-fatal): {e}")
-                # Continue without sales data - this is not critical
+            # 4.5 Sales assessment runs ONLY on client transcripts. Talent
+            # transcripts are recruiter↔candidate conversations — there's no
+            # UNKNOWN salesperson behaviour to assess.
+            sales_score_result = None
+            if source == "client" and os.getenv('ENABLE_SALES_SCORING', 'true').lower() == 'true':
+                try:
+                    print(f"Performing sales assessment...")
+                    sales_score_result = await asyncio.to_thread(scorer.score_salesperson, transcript)
+                    print(f"Sales assessment complete - Score: {sales_score_result.total_score}/24")
+                except Exception as e:
+                    print(f"Sales scoring failed (non-fatal): {e}")
+                    # Continue without sales data - this is not critical
 
         # 5. Cache the results using real meeting_id. The talent result is
         # a Pydantic model with nested Pydantic submodels (TalentNow,
@@ -645,24 +704,44 @@ async def process_pipeline(
         )
 
         print(f"Successfully processed {meeting_id}")
-        
-    except Exception as e:
-        logger.error(f"Error processing {meeting_id}: {e}", exc_info=True)
+        succeeded = True
+        return "completed"
+
+    except PermanentProcessingError as e:
+        # Won't be fixed by retrying. Mark failed and signal a PERMANENT failure
+        # so the handler ACKs (2xx) — no Eventarc redelivery. (Claim release is
+        # handled uniformly in `finally`.)
+        logger.error(f"Permanent failure processing {meeting_id}: {e}")
         processing_status[meeting_id].status = "failed"
         processing_status[meeting_id].error = str(e)
-        # Release the concurrency claim on failure so the meeting can be retried
-        # (a successful run intentionally leaves the claim + result cache so
-        # same-day re-deliveries short-circuit). gcs/real_meeting_id are in
-        # scope only if we got far enough to claim.
-        if claimed and gcs is not None:
+        return "permanent_failure"
+
+    except Exception as e:
+        # Transient/unknown (OpenAI timeout after retries, BQ blip, etc.). Signal
+        # a TRANSIENT failure so the handler returns non-2xx and Eventarc
+        # redelivers. (Claim release is handled uniformly in `finally` — see below.)
+        logger.error(f"Transient error processing {meeting_id}: {e}", exc_info=True)
+        processing_status[meeting_id].status = "failed"
+        processing_status[meeting_id].error = str(e)
+        return "transient_failure"
+
+    finally:
+        # Release the claim on ANY non-success exit so the meeting can be
+        # re-claimed and retried. This lives in `finally` (not the except blocks)
+        # deliberately: a Cloud Run request timeout cancels this task and raises
+        # asyncio.CancelledError, which is a BaseException and would slip past
+        # `except Exception` — leaving the claim stuck and the meeting blocked.
+        # `finally` runs on cancellation too. A successful run (succeeded=True)
+        # intentionally keeps the claim + result cache so same-day re-deliveries
+        # short-circuit. `claimed` is only True after real_meeting_id/
+        # scoring_model/source are all bound, so they're safe to reference here.
+        if claimed and not succeeded and gcs is not None:
             try:
                 gcs.release_claim(real_meeting_id, scoring_model, source)
             except Exception:
                 pass
-
-    finally:
         # Clean up temporary files
-        if temp_files:
+        if temp_files and gcs is not None:
             gcs.cleanup_temp_files(temp_files)
 
 
