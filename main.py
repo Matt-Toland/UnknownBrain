@@ -65,6 +65,7 @@ from src.scoring import OutputGenerator
 from src.bq_loader import BigQueryLoader, upload_to_new_bigquery
 from src.gcs_client import GCSClient, get_gcs_client
 from src.router import resolve_source, get_scorer
+from src.scorers.talent_scorer import Article9RedactionError
 
 # Initialize FastAPI app
 app = FastAPI(
@@ -717,6 +718,21 @@ async def process_pipeline(
         print(f"Successfully processed {meeting_id}")
         succeeded = True
         return "completed"
+
+    except Article9RedactionError as e:
+        # Redact mode could not scrub the transcript clean of CONFIDENT
+        # special-category data within the bound — a meeting whose dominant theme
+        # IS a special category. Fail CLOSED and PERMANENT: never write the row,
+        # and ACK (2xx) so Eventarc does NOT redeliver into repeated minutes-long
+        # redact attempts that will keep failing on genuinely-pervasive data.
+        # Surfaced as a failed status for manual handling / quarantine.
+        logger.error(
+            f"Article 9 redaction did not converge for {meeting_id}; failing "
+            f"closed — row NOT written, needs manual handling: {e}"
+        )
+        processing_status[meeting_id].status = "failed"
+        processing_status[meeting_id].error = str(e)
+        return "permanent_failure"
 
     except PermanentProcessingError as e:
         # Won't be fixed by retrying. Mark failed and signal a PERMANENT failure

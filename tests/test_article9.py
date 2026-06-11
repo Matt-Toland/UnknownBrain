@@ -82,18 +82,28 @@ def _transcript(full_transcript="The candidate discussed their day rate of £450
     )
 
 
-def _mock_client(mock_openai_cls, detection_flags, extraction, narrative="A brief."):
+def _mock_client(mock_openai_cls, detection_rounds, extraction, narrative="A brief."):
+    """
+    detection_rounds is a list of flag-lists, one per detection LLM call in
+    order: round-0 detection, then each redact-loop re-detection. Pass-1
+    extraction is appended last. flag mode uses [flags]; redact uses
+    [round0, [], ...] where an empty list = a clean re-detection (convergence).
+    """
     client = mock_openai_cls.return_value
-    detection_resp = SimpleNamespace(
-        output_parsed=Article9Detection(flags=detection_flags),
-        usage=SimpleNamespace(input_tokens=10, output_tokens=10),
+    parse_side = [
+        SimpleNamespace(
+            output_parsed=Article9Detection(flags=fl),
+            usage=SimpleNamespace(input_tokens=10, output_tokens=10),
+        )
+        for fl in detection_rounds
+    ]
+    parse_side.append(
+        SimpleNamespace(
+            output_parsed=extraction,
+            usage=SimpleNamespace(input_tokens=10, output_tokens=10),
+        )
     )
-    extraction_resp = SimpleNamespace(
-        output_parsed=extraction,
-        usage=SimpleNamespace(input_tokens=10, output_tokens=10),
-    )
-    # Order matters: detection pass runs first, then Pass-1 structured extraction.
-    client.responses.parse.side_effect = [detection_resp, extraction_resp]
+    client.responses.parse.side_effect = parse_side
     client.responses.create.return_value = SimpleNamespace(
         output_text=narrative, usage=SimpleNamespace(input_tokens=5, output_tokens=5)
     )
@@ -162,7 +172,7 @@ class TestArticle9FlagMode(unittest.TestCase):
         flags = [Article9Flag(category="health", span="diagnosed with epilepsy",
                               location="full_transcript", confidence=0.9)]
         ext = _clean_extraction()
-        _mock_client(mock_openai, flags, ext)
+        _mock_client(mock_openai, [flags], ext)
         scorer = _scorer()
         t = _transcript(full_transcript="I was diagnosed with epilepsy last year, but I'm well now.")
 
@@ -190,7 +200,8 @@ class TestArticle9RedactMode(unittest.TestCase):
         flags = [Article9Flag(category="health", span="diagnosed with epilepsy",
                               location="full_transcript", confidence=0.95)]
         ext = _clean_extraction()  # scorer sees clean input -> clean output
-        _mock_client(mock_openai, flags, ext)
+        # round-0 detection finds it; re-detection on scrubbed text is clean.
+        _mock_client(mock_openai, [flags, []], ext)
         scorer = _scorer()
         t = _transcript(full_transcript="I was diagnosed with epilepsy last year, but I'm well now.")
 
@@ -200,43 +211,24 @@ class TestArticle9RedactMode(unittest.TestCase):
         # Raw column scrubbed at the front door.
         self.assertNotIn("epilepsy", t.full_transcript)
         self.assertIn("[REDACTED:health]", t.full_transcript)
-        # Flag metadata: redacted, scrub confirmed, verbatim span dropped.
+        # Flag metadata: redacted, scrub confirmed by re-detection, span dropped,
+        # round count recorded.
         f = result.article9_flags[0]
         self.assertTrue(f.redacted)
         self.assertEqual(f.raw_scrub, "confirmed")
         self.assertIsNone(f.span)
+        self.assertEqual(f.redact_rounds, 1)
         # Scored fields carry no special-category text.
         self.assertNotIn("epilepsy", result.mentioned_companies[0].evidence_quote)
 
     @patch("src.scorers.talent_scorer.OpenAI")
-    def test_partial_scrub_when_raw_phrasing_differs(self, mock_openai):
-        # Extracted span is "bipolar disorder" but the raw text only says "bipolar".
-        # Token match (bipolar\W+disorder) can't anchor -> partial, not silent pass.
-        flags = [Article9Flag(category="health", span="bipolar disorder",
-                              location="full_transcript", confidence=0.8)]
-        ext = _clean_extraction()
-        _mock_client(mock_openai, flags, ext)
-        scorer = _scorer()
-        t = _transcript(full_transcript="They mentioned being bipolar in passing.")
-
-        with patch.dict(os.environ, {"ARTICLE9_MODE": "redact"}):
-            result = scorer.score_transcript_new(t)
-
-        f = result.article9_flags[0]
-        self.assertTrue(f.redacted)
-        self.assertEqual(f.raw_scrub, "partial")   # visible, never silently clean
-        self.assertIsNone(f.span)
-
-    @patch("src.scorers.talent_scorer.OpenAI")
     def test_token_match_handles_punctuation_gap(self, mock_openai):
         # Raw phrasing differs from the span only by punctuation (no intervening
-        # words) -> the token matcher anchors it -> confirmed. (An intervening
-        # filler WORD would correctly yield partial — see the partial test —
-        # because we never over-redact across unrelated words.)
+        # words) -> the token matcher anchors it; re-detection then confirms clean.
         flags = [Article9Flag(category="health", span="heart condition",
                               location="full_transcript", confidence=0.9)]
         ext = _clean_extraction()
-        _mock_client(mock_openai, flags, ext)
+        _mock_client(mock_openai, [flags, []], ext)
         scorer = _scorer()
         t = _transcript(full_transcript="I've got a heart-condition, honestly.")
 
@@ -247,14 +239,88 @@ class TestArticle9RedactMode(unittest.TestCase):
         self.assertIn("[REDACTED:health]", t.full_transcript)
 
     @patch("src.scorers.talent_scorer.OpenAI")
+    def test_multi_phrasing_scrub_until_clean(self, mock_openai):
+        # The key Option-1 behaviour: a fact stated TWO ways. Round-0 detects one
+        # phrasing, scrub removes it; re-detection finds the second phrasing,
+        # scrub removes that; re-detection comes back clean -> converged in 2
+        # rounds, both phrasings gone, raw_scrub confirmed.
+        round0 = [Article9Flag(category="health", span="I have ADHD",
+                               location="full_transcript", confidence=0.95)]
+        round1 = [Article9Flag(category="health", span="my ADHD diagnosis",
+                               location="full_transcript", confidence=0.9)]
+        ext = _clean_extraction()
+        _mock_client(mock_openai, [round0, round1, []], ext)
+        scorer = _scorer()
+        t = _transcript(
+            full_transcript="I have ADHD. We later discussed my ADHD diagnosis at length."
+        )
+
+        with patch.dict(os.environ, {"ARTICLE9_MODE": "redact"}):
+            result = scorer.score_transcript_new(t)
+
+        # Both phrasings — and therefore every "ADHD" mention — are gone.
+        self.assertNotIn("adhd", t.full_transcript.lower())
+        self.assertIn("[REDACTED:health]", t.full_transcript)
+        # Two flags accumulated across rounds; converged on round 2.
+        self.assertEqual(len(result.article9_flags), 2)
+        for f in result.article9_flags:
+            self.assertEqual(f.raw_scrub, "confirmed")
+            self.assertEqual(f.redact_rounds, 2)
+            self.assertIsNone(f.span)
+
+    @patch("src.scorers.talent_scorer.OpenAI")
+    def test_subfloor_residual_does_not_block_convergence(self, mock_openai):
+        # Confidence-floored convergence: round-0 finds a confident disclosure;
+        # re-detection then surfaces only a LOW-confidence marginal span. That
+        # sub-floor span is still scrubbed, but it must NOT block convergence or
+        # trigger the hard-fail (otherwise saturated transcripts never converge).
+        round0 = [Article9Flag(category="health", span="I have epilepsy",
+                               location="full_transcript", confidence=0.95)]
+        marginal = [Article9Flag(category="health", span="might also sneeze",
+                                 location="full_transcript", confidence=0.4)]
+        ext = _clean_extraction()
+        _mock_client(mock_openai, [round0, marginal], ext)
+        scorer = _scorer()
+        t = _transcript(full_transcript="I have epilepsy. I might also sneeze sometimes.")
+
+        with patch.dict(os.environ, {"ARTICLE9_MODE": "redact",
+                                     "ARTICLE9_CONVERGENCE_MIN_CONFIDENCE": "0.7"}):
+            result = scorer.score_transcript_new(t)
+
+        # Converged on round 1 (no confident span remained); both spans scrubbed.
+        self.assertNotIn("epilepsy", t.full_transcript)
+        self.assertNotIn("might also sneeze", t.full_transcript)
+        self.assertEqual(len(result.article9_flags), 2)
+        for f in result.article9_flags:
+            self.assertEqual(f.redact_rounds, 1)
+
+    @patch("src.scorers.talent_scorer.OpenAI")
+    def test_bounded_loop_hard_fails_when_never_clean(self, mock_openai):
+        # Synthetic always-dirty input: re-detection keeps returning a category.
+        # The loop is bounded -> it must hard-fail (fail closed), never spin.
+        from src.scorers.talent_scorer import Article9RedactionError
+        dirty = [Article9Flag(category="health", span="ongoing health issue",
+                              location="full_transcript", confidence=0.9)]
+        ext = _clean_extraction()
+        # max_rounds=2 -> round-0 + 2 re-detections, all dirty -> raise.
+        _mock_client(mock_openai, [dirty, dirty, dirty], ext)
+        scorer = _scorer()
+        t = _transcript(full_transcript="There is an ongoing health issue to note.")
+
+        with patch.dict(os.environ, {"ARTICLE9_MODE": "redact", "ARTICLE9_MAX_REDACT_ROUNDS": "2"}):
+            with self.assertRaises(Article9RedactionError):
+                scorer.score_transcript_new(t)
+
+    @patch("src.scorers.talent_scorer.OpenAI")
     def test_residue_hard_fails(self, mock_openai):
         # The scorer (mock) re-emits the special-category span in a quote even
-        # though the raw text was scrubbed -> the completeness check MUST raise.
+        # though the raw text was scrubbed and re-detection came back clean ->
+        # the final scored-field completeness check MUST raise.
         from src.scorers.talent_scorer import Article9RedactionError
         flags = [Article9Flag(category="health", span="diagnosed with epilepsy",
                               location="full_transcript", confidence=0.95)]
         leaky = _clean_extraction(quote="they said they were diagnosed with epilepsy")
-        _mock_client(mock_openai, flags, leaky)
+        _mock_client(mock_openai, [flags, []], leaky)
         scorer = _scorer()
         t = _transcript(full_transcript="I was diagnosed with epilepsy last year.")
 
@@ -270,7 +336,7 @@ class TestArticle9CleanTranscript(unittest.TestCase):
     @patch("src.scorers.talent_scorer.OpenAI")
     def test_no_flags_no_change_flag_mode(self, mock_openai):
         ext = _clean_extraction()
-        _mock_client(mock_openai, [], ext)
+        _mock_client(mock_openai, [[]], ext)
         scorer = _scorer()
         original = "Standard recruiter call about a design role and day rate."
         t = _transcript(full_transcript=original)
@@ -282,21 +348,22 @@ class TestArticle9CleanTranscript(unittest.TestCase):
     @patch("src.scorers.talent_scorer.OpenAI")
     def test_no_flags_no_change_redact_mode(self, mock_openai):
         ext = _clean_extraction()
-        _mock_client(mock_openai, [], ext)
+        _mock_client(mock_openai, [[]], ext)
         scorer = _scorer()
         original = "Standard recruiter call about a design role and day rate."
         t = _transcript(full_transcript=original)
         with patch.dict(os.environ, {"ARTICLE9_MODE": "redact"}):
             result = scorer.score_transcript_new(t)
-        # Detection ran but found nothing -> identical output, raw text untouched.
+        # Round-0 detection found nothing -> no scrub loop, identical output.
         self.assertEqual(result.article9_flags, [])
         self.assertEqual(t.full_transcript, original)
 
     @patch("src.scorers.talent_scorer.OpenAI")
     def test_detection_always_runs(self, mock_openai):
-        # Two responses.parse calls = detection + Pass-1, regardless of mode.
+        # Two responses.parse calls = detection + Pass-1, regardless of mode
+        # (flag mode runs no re-detection loop).
         ext = _clean_extraction()
-        client = _mock_client(mock_openai, [], ext)
+        client = _mock_client(mock_openai, [[]], ext)
         scorer = _scorer()
         with patch.dict(os.environ, {"ARTICLE9_MODE": "flag"}):
             scorer.score_transcript_new(_transcript())
@@ -325,6 +392,21 @@ class TestArticle9DomainIsolation(unittest.TestCase):
         from src.scorers import TalentScorer
         # Detection lives on the talent scorer only.
         self.assertTrue(hasattr(TalentScorer, "_detect_article9"))
+
+    def test_redaction_hardfail_mapped_permanent_in_pipeline(self):
+        # A non-converging redact must be a PERMANENT failure (fail closed, no
+        # Eventarc redelivery), handled before the generic transient handler.
+        import inspect
+        import main
+        src = inspect.getsource(main.process_pipeline)
+        self.assertIn("except Article9RedactionError", src)
+        self.assertIn('return "permanent_failure"', src)
+        # Handled before the OUTER transient handler (the last `except Exception`;
+        # an earlier one is the inner non-fatal sales-scoring guard).
+        self.assertLess(
+            src.index("except Article9RedactionError"),
+            src.rindex("except Exception"),
+        )
 
 
 if __name__ == "__main__":

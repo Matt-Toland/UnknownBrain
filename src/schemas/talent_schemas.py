@@ -253,7 +253,11 @@ class Article9Flag(BaseModel):
     )
     raw_scrub: Optional[Article9RawScrubStatus] = Field(
         None,
-        description="COMPUTED IN CODE — do not set. 'confirmed'/'partial' scrub outcome (redact mode only).",
+        description="COMPUTED IN CODE — do not set. 'confirmed' once a re-detection pass came back clean for the category; 'partial' otherwise (redact mode only).",
+    )
+    redact_rounds: Optional[int] = Field(
+        None,
+        description="COMPUTED IN CODE — do not set. Number of scrub+re-detect rounds it took to verify the text clean (redact mode only). Near-miss visibility.",
     )
 
 

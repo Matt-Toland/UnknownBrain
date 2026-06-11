@@ -122,6 +122,33 @@ def _article9_mode() -> str:
 ARTICLE9_DETECTION_REASONING_EFFORT = os.getenv("ARTICLE9_DETECTION_REASONING_EFFORT", "medium")
 ARTICLE9_DETECTION_MAX_OUTPUT_TOKENS = int(os.getenv("ARTICLE9_DETECTION_MAX_TOKENS", "16000"))
 
+# Redact mode verifies completeness by re-detecting on the scrubbed text and
+# scrubbing anything new, bounded to this many rounds. A single detected span is
+# only one phrasing of a fact a candidate may repeat ("I have ADHD" vs the
+# enhanced_notes "Has ADHD"); exact-span scrubbing alone leaves the other
+# phrasings. The loop closes that gap; if the text is still dirty after the
+# bound, we fail closed rather than persist a row re-detection still flags.
+# Default 5: on a heavily-saturated transcript (a candidate whose disability is a
+# recurring theme), confident disclosures are scattered across many sentences and
+# drain a few per round; the Nimo diagnostic reached sub-floor by round ~4, so 5
+# gives headroom. Most talent transcripts mention a category incidentally and
+# converge in 1 round. The bound only bites on saturated meetings, where it
+# correctly fails closed rather than grind unboundedly.
+ARTICLE9_MAX_REDACT_ROUNDS = int(os.getenv("ARTICLE9_MAX_REDACT_ROUNDS", "5"))
+
+# Convergence confidence floor. On a transcript where a category is pervasively
+# discussed, the non-deterministic detector surfaces an endless tail of marginal
+# detections (hyperbole "I'm dying", garbled ASR fragments, nationality≠race) —
+# the genuine high-confidence disclosures scrub out in 2-3 rounds, but absolute
+# zero is unreachable. So the redact loop scrubs EVERYTHING it detects, but only
+# REQUIRES-clean / hard-fails on detections at/above this floor. The guarantee
+# is therefore "no confident special-category disclosure survives" — precise and
+# achievable — rather than "zero detections", which would fail-closed (drop the
+# meeting) over noise. Validated against the Nimo transcript (4 self-disclosed
+# categories): floor 0.7 cleanly separates the 0.8–0.99 disclosures from the
+# ≤0.6 marginal tail.
+ARTICLE9_CONVERGENCE_MIN_CONFIDENCE = float(os.getenv("ARTICLE9_CONVERGENCE_MIN_CONFIDENCE", "0.7"))
+
 
 class Article9RedactionError(RuntimeError):
     """
@@ -157,6 +184,7 @@ Rules:
 - Detect references about ANY identifiable person in the conversation (the candidate, the recruiter, or a named third party), from either speaker.
 - This is detection only. Do NOT set `redacted` or `raw_scrub` — those are computed downstream in code. Do not rewrite, summarise, or sanitise anything; only report spans.
 - Do not over-reach into non-special data: generic job role, seniority, company, comp, notice period, or motivation are NOT Article 9 categories. A nationality/visa mention is only racial_or_ethnic_origin if it actually reveals racial/ethnic origin; pure work-authorisation logistics are not special-category on their own.
+- IGNORE any `[REDACTED:<category>]` placeholders — they mark content already removed. Do not flag them, and do not treat the category word inside a placeholder as a new reference.
 """
 
 PROMPT_ARTICLE9 = """\
@@ -395,18 +423,21 @@ class TalentScorer:
         mode = _article9_mode()
 
         # Article 9 detection — ALWAYS runs (talent only), on the ORIGINAL text,
-        # BEFORE scoring so redact mode can scrub at the front door. Capture the
-        # original spans now: redact drops them from the flags metadata, but the
-        # completeness check below needs them (held in local memory only).
+        # BEFORE scoring so redact mode can scrub at the front door.
         article9_flags = self._detect_article9(transcript)
-        original_spans = [f.span for f in article9_flags if f.span]
+        original_spans: list = []
 
         if mode == "redact" and article9_flags:
-            # Front-door scrub: mutate the transcript text IN PLACE so both the
-            # scorer and the raw-column write path (which read the same object)
-            # inherit clean input. Sets redacted=True, records raw_scrub, and
-            # drops the verbatim span from each flag.
-            self._scrub_article9(transcript, article9_flags)
+            # Front-door scrub-until-clean: scrub, then re-detect on the scrubbed
+            # text and scrub anything new, bounded to ARTICLE9_MAX_REDACT_ROUNDS.
+            # Guarantees a re-detection pass comes back clean (or fails closed),
+            # so repeated/alternate phrasings of the same fact don't survive.
+            # Mutates the transcript IN PLACE so both the scorer and the raw-
+            # column writer (same object) inherit clean input. `original_spans`
+            # accumulates every detected span across rounds for the final check.
+            article9_flags, original_spans = self._redact_to_clean(
+                transcript, article9_flags
+            )
 
         context = self._format_transcript(transcript)
 
@@ -726,6 +757,71 @@ class TalentScorer:
             return pattern.sub(placeholder, text), True
 
         return text, False
+
+    # ---------------------------------------------------------------------
+    # Article 9 — scrub-until-clean loop (redact mode; HARD-FAILS on no converge)
+    # ---------------------------------------------------------------------
+    def _redact_to_clean(self, transcript: Transcript, flags: list):
+        """
+        Front-door scrub-until-clean for redact mode.
+
+        A single detected span is only ONE phrasing of a fact a candidate may
+        state several ways ("I have ADHD" in the transcript vs "Has ADHD" in the
+        enhanced_notes summary). Exact-span scrubbing removes that phrasing but
+        not the others, so we scrub EVERYTHING detected, then RE-DETECT on the
+        scrubbed text and scrub anything new — bounded to ARTICLE9_MAX_REDACT_ROUNDS.
+
+        Convergence is confidence-floored: a re-detection pass that returns no
+        detection at/above ARTICLE9_CONVERGENCE_MIN_CONFIDENCE. On a saturated
+        transcript the detector emits an endless tail of marginal (≤floor)
+        detections — we still scrub those, but they don't block convergence. If
+        a CONFIDENT (≥floor) detection persists after the bound, raise
+        Article9RedactionError (fail closed). Mutates `transcript` in place.
+
+        Returns (all_flags, confident_spans): every flag found across rounds
+        (spans dropped, raw_scrub + redact_rounds set) and the verbatim spans of
+        the CONFIDENT detections (kept in memory for the caller's final
+        scored-field residue check — the hard guarantee is about confident data).
+        """
+        max_rounds = int(os.getenv("ARTICLE9_MAX_REDACT_ROUNDS", str(ARTICLE9_MAX_REDACT_ROUNDS)))
+        floor = float(os.getenv("ARTICLE9_CONVERGENCE_MIN_CONFIDENCE", str(ARTICLE9_CONVERGENCE_MIN_CONFIDENCE)))
+        all_flags = list(flags)
+        confident_spans = [f.span for f in flags if f.span and f.confidence >= floor]
+        self._scrub_article9(transcript, flags)
+
+        converged = False
+        rounds_used = 0
+        for rnd in range(1, max_rounds + 1):
+            rounds_used = rnd
+            residual = self._detect_article9(transcript)
+            if residual:
+                # Scrub everything found (incl. sub-floor) to maximise removal.
+                confident_spans.extend(
+                    f.span for f in residual if f.span and f.confidence >= floor
+                )
+                all_flags.extend(residual)
+                self._scrub_article9(transcript, residual)
+            # Converged once no CONFIDENT special-category data remains.
+            if not any(f.confidence >= floor for f in residual):
+                converged = True
+                break
+
+        if not converged:
+            raise Article9RedactionError(
+                f"Article 9 redaction did not converge for meeting "
+                f"{transcript.meeting_id}: re-detection still found special-category "
+                f"data at confidence >= {floor} after {max_rounds} scrub round(s). "
+                f"Failing closed — refusing to persist a row re-detection still "
+                f"considers dirty."
+            )
+
+        # Converged: a re-detection pass found no confident special-category
+        # data. Mark confirmed and record how many rounds it took (near-miss
+        # visibility). raw_scrub reflects the re-detection verdict.
+        for f in all_flags:
+            f.raw_scrub = "confirmed"
+            f.redact_rounds = rounds_used
+        return all_flags, confident_spans
 
     # ---------------------------------------------------------------------
     # Article 9 — completeness check (redact mode; HARD-FAILS)
