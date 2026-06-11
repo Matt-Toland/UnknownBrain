@@ -157,6 +157,9 @@ class BigQueryLoader:
             bigquery.SchemaField("mentioned_companies", "JSON", mode="REPEATED", description="{name, type, sentiment, evidence_quote}"),
             bigquery.SchemaField("perception_themes", "JSON", mode="REPEATED", description="{company_name, theme, polarity, evidence_quote}"),
             bigquery.SchemaField("articulated_blockers", "JSON", mode="REPEATED", description="{company_name, category, evidence_quote}"),
+
+            # Article 9 special-category handling metadata (talent only; empty on client rows).
+            bigquery.SchemaField("article9_flags", "JSON", mode="REPEATED", description="{category, location, confidence, redacted, raw_scrub} — UK GDPR Art.9 detection/redaction metadata"),
         ]
 
         table = bigquery.Table(table_id, schema=schema)
@@ -447,7 +450,8 @@ class BigQueryLoader:
                 talent_narrative = source.talent_narrative,
                 mentioned_companies = source.mentioned_companies,
                 perception_themes = source.perception_themes,
-                articulated_blockers = source.articulated_blockers
+                articulated_blockers = source.articulated_blockers,
+                article9_flags = source.article9_flags
         WHEN NOT MATCHED THEN
             INSERT ROW
         """

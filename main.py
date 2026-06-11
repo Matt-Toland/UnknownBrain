@@ -610,8 +610,19 @@ async def process_pipeline(
                 f"malformed or metadata-less upload (no Granola note-id link in body)."
             )
 
+        # Article 9 mode is part of the talent cache key: flipping flag<->redact
+        # changes the persisted output, so it must invalidate the cache — else a
+        # re-score after a mode change hits the stale row and skips the new write
+        # behaviour. Client rows are unaffected (variant stays None).
+        cache_variant = None
+        if source == "talent":
+            from src.scorers.talent_scorer import _article9_mode
+            cache_variant = f"a9-{_article9_mode()}"
+
         # 3. Check cache with real meeting_id
-        cached_result = gcs.get_cached_score(real_meeting_id, scoring_model, source)
+        cached_result = gcs.get_cached_score(
+            real_meeting_id, scoring_model, source, variant=cache_variant
+        )
         if cached_result:
             print(f"Using cached result for real meeting_id {real_meeting_id}")
             processing_status[meeting_id].status = "completed"
@@ -679,7 +690,7 @@ async def process_pipeline(
             cache_payload = new_score_result.model_dump(mode="json")
         else:
             cache_payload = new_score_result.__dict__
-        gcs.cache_score(real_meeting_id, scoring_model, source, cache_payload)
+        gcs.cache_score(real_meeting_id, scoring_model, source, cache_payload, variant=cache_variant)
 
         # 6. Upload to meeting_intel BigQuery table — dispatch by domain so
         # each path writes only its own columns (sales_* stay NULL on
@@ -980,6 +991,11 @@ async def upload_talent_format_to_bigquery(
             "mentioned_companies": [m.model_dump(mode="json") for m in talent_result.mentioned_companies],
             "perception_themes": [p.model_dump(mode="json") for p in talent_result.perception_themes],
             "articulated_blockers": [a.model_dump(mode="json") for a in talent_result.articulated_blockers],
+
+            # Article 9 special-category handling metadata (talent only). In
+            # redact mode each flag's verbatim `span` is already dropped and the
+            # raw columns above were scrubbed at the front door by the scorer.
+            "article9_flags": [f.model_dump(mode="json") for f in talent_result.article9_flags],
         }
 
         temp_jsonl_path = Path(f"/tmp/{meeting_id}_talent.jsonl")

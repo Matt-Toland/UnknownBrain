@@ -191,7 +191,9 @@ class GCSClient:
             print(f"Error getting metadata for {blob_name}: {e}")
             return None
     
-    def create_cache_key(self, meeting_id: str, model: str, source: str) -> str:
+    def create_cache_key(
+        self, meeting_id: str, model: str, source: str, variant: Optional[str] = None
+    ) -> str:
         """
         Create a cache key for scored results.
 
@@ -199,15 +201,24 @@ class GCSClient:
         meeting_id+model but different scorer domains (client vs talent)
         don't collide. Without this, a client-scored result would be
         silently returned for a talent re-run, bypassing the router.
+
+        `variant` is an optional extra key component for scoring behaviour that
+        changes the OUTPUT but isn't captured by source/model — e.g. the talent
+        Article 9 mode (flag vs redact). Including it means flipping the mode is
+        a cache MISS, forcing a clean re-score rather than serving a stale row.
+        Client cache keys pass variant=None, so their paths are unchanged.
         """
         today = datetime.now().strftime('%Y-%m-%d')
-        return f"cache/{today}/{meeting_id}-{model}-{source}.json"
+        suffix = f"-{variant}" if variant else ""
+        return f"cache/{today}/{meeting_id}-{model}-{source}{suffix}.json"
 
-    def get_cached_score(self, meeting_id: str, model: str, source: str) -> Optional[Dict[Any, Any]]:
+    def get_cached_score(
+        self, meeting_id: str, model: str, source: str, variant: Optional[str] = None
+    ) -> Optional[Dict[Any, Any]]:
         """
-        Get cached score results for the given meeting/model/source triple.
+        Get cached score results for the given meeting/model/source(/variant) key.
         """
-        cache_key = self.create_cache_key(meeting_id, model, source)
+        cache_key = self.create_cache_key(meeting_id, model, source, variant)
 
         try:
             if self.file_exists(cache_key):
@@ -218,11 +229,14 @@ class GCSClient:
             print(f"Error getting cached score: {e}")
             return None
 
-    def cache_score(self, meeting_id: str, model: str, source: str, results: Dict[Any, Any]) -> str:
+    def cache_score(
+        self, meeting_id: str, model: str, source: str, results: Dict[Any, Any],
+        variant: Optional[str] = None,
+    ) -> str:
         """
-        Cache score results under the meeting/model/source triple.
+        Cache score results under the meeting/model/source(/variant) key.
         """
-        cache_key = self.create_cache_key(meeting_id, model, source)
+        cache_key = self.create_cache_key(meeting_id, model, source, variant)
 
         # Add caching metadata
         cache_data = {

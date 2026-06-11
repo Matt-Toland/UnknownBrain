@@ -33,6 +33,7 @@ from src.schemas import (
     MentionedCompany,
     PerceptionTheme,
     ArticulatedBlocker,
+    Article9Detection,
     TalentStructuredExtraction,
 )
 
@@ -432,13 +433,19 @@ class TestTalentScorerTwoPassFlow(unittest.TestCase):
     def test_pass1_calls_responses_parse_with_pydantic_schema(self, mock_openai_cls):
         from src.scorers import TalentScorer
 
-        # Build the OpenAI client mock — responses.parse returns an object with
-        # .output_parsed set to a TalentStructuredExtraction instance.
+        # responses.parse is called twice now: Article 9 detection (always runs,
+        # first), then Pass-1 structured extraction. Order via side_effect.
         client = mock_openai_cls.return_value
-        client.responses.parse.return_value = SimpleNamespace(
-            output_parsed=_make_extraction_stub(),
-            usage=SimpleNamespace(input_tokens=100, output_tokens=200),
-        )
+        client.responses.parse.side_effect = [
+            SimpleNamespace(
+                output_parsed=Article9Detection(flags=[]),
+                usage=SimpleNamespace(input_tokens=10, output_tokens=10),
+            ),
+            SimpleNamespace(
+                output_parsed=_make_extraction_stub(),
+                usage=SimpleNamespace(input_tokens=100, output_tokens=200),
+            ),
+        ]
         client.responses.create.return_value = SimpleNamespace(
             output_text="A brief candidate summary.",
             usage=SimpleNamespace(input_tokens=80, output_tokens=120),
@@ -451,9 +458,10 @@ class TestTalentScorerTwoPassFlow(unittest.TestCase):
         transcript = _make_transcript()
         result = scorer.score_transcript_new(transcript)
 
-        # Pass 1 was called exactly once, with the TalentStructuredExtraction schema
-        client.responses.parse.assert_called_once()
-        kwargs = client.responses.parse.call_args.kwargs
+        # Two parse calls: detection then Pass-1. The Pass-1 call (2nd) uses the
+        # TalentStructuredExtraction schema and includes the transcript body.
+        self.assertEqual(client.responses.parse.call_count, 2)
+        kwargs = client.responses.parse.call_args_list[1].kwargs
         self.assertEqual(kwargs["model"], "gpt-5-mini")
         self.assertIs(kwargs["text_format"], TalentStructuredExtraction)
         # The user content must include the raw transcript body
@@ -472,10 +480,16 @@ class TestTalentScorerTwoPassFlow(unittest.TestCase):
         from src.scorers import TalentScorer
 
         client = mock_openai_cls.return_value
-        client.responses.parse.return_value = SimpleNamespace(
-            output_parsed=_make_extraction_stub(),
-            usage=SimpleNamespace(input_tokens=10, output_tokens=20),
-        )
+        client.responses.parse.side_effect = [
+            SimpleNamespace(
+                output_parsed=Article9Detection(flags=[]),
+                usage=SimpleNamespace(input_tokens=10, output_tokens=20),
+            ),
+            SimpleNamespace(
+                output_parsed=_make_extraction_stub(),
+                usage=SimpleNamespace(input_tokens=10, output_tokens=20),
+            ),
+        ]
         client.responses.create.return_value = SimpleNamespace(
             output_text="narrative",
             usage=SimpleNamespace(input_tokens=10, output_tokens=20),

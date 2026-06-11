@@ -30,9 +30,13 @@ from typing import Any, Dict, Optional
 from dotenv import load_dotenv
 from openai import OpenAI
 
+import re
+
 from ..cost_logger import log_llm_call
 from ..llm_retry import call_with_transient_retry
 from ..schemas import (
+    Article9Detection,
+    Article9Flag,
     CompStructured,
     Transcript,
     TalentScoringResult,
@@ -92,6 +96,74 @@ def _comp_bounds() -> Dict[str, tuple]:
             float(os.getenv("COMP_PLAUSIBLE_YEAR_MAX", "2000000")),
         ),
     }
+
+
+# ---------------------------------------------------------------------------
+# Article 9 special-category handling (UK GDPR Art. 9) — talent domain only.
+# ---------------------------------------------------------------------------
+# Detection ALWAYS runs (a dedicated pre-scoring pass on the original text);
+# the mode governs only the WRITE behaviour. Read at call time so flipping the
+# toggle doesn't need a redeploy and tests can patch it.
+#   flag (default): nothing removed — raw columns, buckets, narrative, quotes
+#       all written intact; article9_flags metadata records what/where.
+#   redact: scrub detected spans from the raw text at the FRONT DOOR, before
+#       scoring, so every downstream field inherits clean input by construction;
+#       the verbatim span is dropped from metadata (category + location only).
+ARTICLE9_VALID_MODES = ("flag", "redact")
+
+
+def _article9_mode() -> str:
+    mode = os.getenv("ARTICLE9_MODE", "flag").strip().lower()
+    return mode if mode in ARTICLE9_VALID_MODES else "flag"
+
+
+# Detection is compliance-critical recall, so default to medium reasoning. As
+# with Pass-1, reasoning tokens count against max_output on the Responses API.
+ARTICLE9_DETECTION_REASONING_EFFORT = os.getenv("ARTICLE9_DETECTION_REASONING_EFFORT", "medium")
+ARTICLE9_DETECTION_MAX_OUTPUT_TOKENS = int(os.getenv("ARTICLE9_DETECTION_MAX_TOKENS", "16000"))
+
+
+class Article9RedactionError(RuntimeError):
+    """
+    Raised in redact mode when a detected special-category span survives the
+    front-door scrub and would otherwise reach a persisted field. Fail closed:
+    the scoring call aborts before any BigQuery write, so special-category data
+    is never persisted in redact mode. This is the load-bearing safety check —
+    in front-door redaction the scored fields are clean ONLY if the scrub
+    worked, so a survivor must hard-fail, never be logged-and-ignored.
+    """
+
+
+SYSTEM_INSTRUCTION_ARTICLE9 = """\
+You are a UK GDPR Article 9 special-category data detector. You scan a recruiter↔candidate meeting transcript and identify every span of text that reveals, or is, special-category personal data about an identifiable person.
+
+The nine Article 9 special categories (use these exact enum values for `category`):
+- racial_or_ethnic_origin
+- political_opinions
+- religious_or_philosophical_beliefs
+- trade_union_membership
+- genetic_data
+- biometric_data
+- health  (physical or mental health, conditions, diagnoses, disability, pregnancy, treatment, medication)
+- sex_life
+- sexual_orientation
+
+Rules:
+- Return one entry per distinct special-category reference, in `flags`. If there are none, return an empty list.
+- `span` MUST be the VERBATIM substring from the transcript that carries the special-category information — copy it exactly as written (same casing, punctuation, filler words). Keep it tight: the minimal phrase that conveys the special-category fact, not the whole sentence. This span is used to locate and remove the text, so it must match the source exactly.
+- `category` is the single best-fitting enum from the nine above.
+- `location` is a short locator for where it appeared — use the section name ("full_transcript", "enhanced_notes", "my_notes", or "notes") and optionally a few words of nearby context.
+- `confidence` is 0–1. Favour recall: when something plausibly reveals a special category, flag it with a lower confidence rather than dropping it.
+- Detect references about ANY identifiable person in the conversation (the candidate, the recruiter, or a named third party), from either speaker.
+- This is detection only. Do NOT set `redacted` or `raw_scrub` — those are computed downstream in code. Do not rewrite, summarise, or sanitise anything; only report spans.
+- Do not over-reach into non-special data: generic job role, seniority, company, comp, notice period, or motivation are NOT Article 9 categories. A nationality/visa mention is only racial_or_ethnic_origin if it actually reveals racial/ethnic origin; pure work-authorisation logistics are not special-category on their own.
+"""
+
+PROMPT_ARTICLE9 = """\
+Scan the meeting text below and return every UK GDPR Article 9 special-category span as structured `flags` (category, verbatim span, location, confidence). Return an empty list if there are none. Detection only — do not set redacted/raw_scrub, and do not alter any text.
+
+Meeting text:
+"""
 
 
 SYSTEM_INSTRUCTION_PASS1 = """\
@@ -312,11 +384,30 @@ class TalentScorer:
         """
         Run the two-pass talent scoring flow for a single transcript.
 
+        Article 9: detect special-category spans on the ORIGINAL text first;
+            in redact mode scrub them at the front door (before scoring) so the
+            scored fields are clean by construction.
         Pass 1: structured extraction.
         Canonicalise company names against client_mappings.
         Enforce status invariants (deterministic; not prompt-level).
         Pass 2: narrative summary from the canonicalised Pass-1 output.
         """
+        mode = _article9_mode()
+
+        # Article 9 detection — ALWAYS runs (talent only), on the ORIGINAL text,
+        # BEFORE scoring so redact mode can scrub at the front door. Capture the
+        # original spans now: redact drops them from the flags metadata, but the
+        # completeness check below needs them (held in local memory only).
+        article9_flags = self._detect_article9(transcript)
+        original_spans = [f.span for f in article9_flags if f.span]
+
+        if mode == "redact" and article9_flags:
+            # Front-door scrub: mutate the transcript text IN PLACE so both the
+            # scorer and the raw-column write path (which read the same object)
+            # inherit clean input. Sets redacted=True, records raw_scrub, and
+            # drops the verbatim span from each flag.
+            self._scrub_article9(transcript, article9_flags)
+
         context = self._format_transcript(transcript)
 
         # Pass 1 — structured extraction
@@ -339,7 +430,7 @@ class TalentScorer:
         # Pass 2 — narrative summary, fed the canonicalised Pass-1 output (not the raw transcript)
         narrative = self._run_narrative_pass(extraction, transcript.meeting_id)
 
-        return TalentScoringResult(
+        result = TalentScoringResult(
             meeting_id=transcript.meeting_id,
             date=transcript.date,
             talent_now=extraction.talent_now,
@@ -351,9 +442,19 @@ class TalentScorer:
             perception_themes=extraction.perception_themes,
             articulated_blockers=extraction.articulated_blockers,
             talent_narrative=narrative,
+            article9_flags=article9_flags,
             scored_at=datetime.now(timezone.utc),
             llm_model=self.model,
         )
+
+        if mode == "redact":
+            # Load-bearing hard check. In front-door redaction the scored fields
+            # are clean ONLY if the scrub worked — if a span slipped through it
+            # flowed into the buckets/quotes/narrative, and this is the only
+            # catch. Raises (fail closed) so a leak is never persisted.
+            self._assert_no_article9_residue(result, transcript, original_spans)
+
+        return result
 
     # ---------------------------------------------------------------------
     # Pass 1 — structured extraction via OpenAI structured outputs
@@ -459,6 +560,219 @@ class TalentScorer:
             )
             text = "Candidate summary unavailable — narrative pass returned no output."
         return text
+
+    # ---------------------------------------------------------------------
+    # Article 9 — detection pass (always runs; talent domain only)
+    # ---------------------------------------------------------------------
+    def _detect_article9(self, transcript: Transcript) -> list:
+        """
+        Dedicated pre-scoring LLM pass over the ORIGINAL transcript text that
+        identifies UK GDPR Article 9 special-category spans. Returns a list of
+        Article9Flag (empty if none). Runs in both modes — you can't scrub what
+        you haven't detected. The LLM sets category/span/location/confidence;
+        `redacted`/`raw_scrub` stay at their code-owned defaults here.
+        """
+        meeting_id = transcript.meeting_id
+        context = self._format_for_article9(transcript)
+        if not context.strip():
+            return []
+
+        user_content = f"{PROMPT_ARTICLE9}{context}"
+
+        if self.model.startswith("gpt-5") or self.model.startswith("o1"):
+            combined = f"{SYSTEM_INSTRUCTION_ARTICLE9}\n\n{user_content}"
+            response = call_with_transient_retry(
+                lambda: self.client.responses.parse(
+                    model=self.model,
+                    input=combined,
+                    text_format=Article9Detection,
+                    reasoning={"effort": ARTICLE9_DETECTION_REASONING_EFFORT},
+                    max_output_tokens=ARTICLE9_DETECTION_MAX_OUTPUT_TOKENS,
+                ),
+                label=f"talent_article9[{meeting_id}]",
+            )
+            parsed = response.output_parsed
+        else:
+            response = call_with_transient_retry(
+                lambda: self.client.beta.chat.completions.parse(
+                    model=self.model,
+                    messages=[
+                        {"role": "system", "content": SYSTEM_INSTRUCTION_ARTICLE9},
+                        {"role": "user", "content": user_content},
+                    ],
+                    response_format=Article9Detection,
+                ),
+                label=f"talent_article9[{meeting_id}]",
+            )
+            parsed = response.choices[0].message.parsed
+
+        log_llm_call(
+            meeting_id=meeting_id,
+            scoring_domain=self._scoring_domain,
+            model=self.model,
+            prompt_label="talent_article9_detection",
+            response=response,
+        )
+
+        if parsed is None:
+            # Detection is compliance-critical: a null parse is not "no
+            # special-category data", it's a failed detection. Fail loud so the
+            # pipeline retries/redelivers rather than silently writing unscanned.
+            raise RuntimeError(
+                f"Article 9 detection returned no parsed output for meeting {meeting_id}"
+            )
+        return list(parsed.flags)
+
+    def _format_for_article9(self, transcript: Transcript) -> str:
+        """
+        Concatenate every raw source field the talent path can persist
+        (full_transcript, enhanced_notes, my_notes, speaker notes) under section
+        labels, so detection sees exactly the text that could leak. Capped by
+        the same env knob as scoring to guard against pathological inputs.
+        """
+        cap = int(os.getenv("TALENT_TRANSCRIPT_CHAR_CAP", "120000"))
+        chunks: list[str] = []
+        if transcript.full_transcript and transcript.full_transcript.strip():
+            chunks.append("[full_transcript]\n" + transcript.full_transcript.strip())
+        if transcript.enhanced_notes and transcript.enhanced_notes.strip():
+            chunks.append("[enhanced_notes]\n" + transcript.enhanced_notes.strip())
+        if transcript.my_notes and transcript.my_notes.strip():
+            chunks.append("[my_notes]\n" + transcript.my_notes.strip())
+        note_lines = [n.text for n in (transcript.notes or []) if n.text and n.text.strip()]
+        if note_lines:
+            chunks.append("[notes]\n" + "\n".join(note_lines))
+        text = "\n\n".join(chunks)
+        if len(text) > cap:
+            text = text[:cap] + "\n...\n[truncated]"
+        return text
+
+    # ---------------------------------------------------------------------
+    # Article 9 — front-door scrub (redact mode only; mutates in place)
+    # ---------------------------------------------------------------------
+    def _scrub_article9(self, transcript: Transcript, flags: list) -> None:
+        """
+        Remove every detected span from the transcript's raw text fields IN
+        PLACE, replacing it with `[REDACTED:<category>]`. Because the scorer and
+        the BQ raw-column writer both read this same object, one scrub here makes
+        every downstream field clean.
+
+        For each flag: try exact (case-insensitive) match first, then a
+        whitespace/punctuation-tolerant token match (the extracted span won't
+        always be verbatim — "epilepsy" vs "uh, I've got, like, epilepsy"). Set
+        `raw_scrub='confirmed'` if the span was located and removed anywhere,
+        else `'partial'` — an unconfirmed scrub must be VISIBLE, never silently
+        assumed clean. Always set `redacted=True` and drop the verbatim `span`
+        so the special-category text itself is never persisted.
+        """
+        for flag in flags:
+            span = flag.span
+            placeholder = f"[REDACTED:{flag.category}]"
+            removed_anywhere = False
+
+            if span and span.strip():
+                # Raw text fields.
+                if transcript.full_transcript:
+                    transcript.full_transcript, hit = self._redact_span_in_text(
+                        transcript.full_transcript, span, placeholder
+                    )
+                    removed_anywhere = removed_anywhere or hit
+                if transcript.enhanced_notes:
+                    transcript.enhanced_notes, hit = self._redact_span_in_text(
+                        transcript.enhanced_notes, span, placeholder
+                    )
+                    removed_anywhere = removed_anywhere or hit
+                if transcript.my_notes:
+                    transcript.my_notes, hit = self._redact_span_in_text(
+                        transcript.my_notes, span, placeholder
+                    )
+                    removed_anywhere = removed_anywhere or hit
+                # Speaker notes (the no-transcript fallback source).
+                for note in transcript.notes or []:
+                    if note.text:
+                        note.text, hit = self._redact_span_in_text(
+                            note.text, span, placeholder
+                        )
+                        removed_anywhere = removed_anywhere or hit
+
+            flag.raw_scrub = "confirmed" if removed_anywhere else "partial"
+            flag.redacted = True
+            flag.span = None  # never persist the verbatim special-category text
+
+    @staticmethod
+    def _redact_span_in_text(text: str, span: str, placeholder: str):
+        """
+        Replace `span` in `text` with `placeholder`. Returns (new_text, found).
+        Exact case-insensitive match first; failing that, a token match tolerant
+        of whitespace/punctuation between the span's words. Returns found=False
+        if the span couldn't be anchored (caller records that as a partial scrub).
+        """
+        if not text or not span or not span.strip():
+            return text, False
+
+        # 1. Exact (case-insensitive) substring.
+        exact = re.compile(re.escape(span), re.IGNORECASE)
+        if exact.search(text):
+            return exact.sub(placeholder, text), True
+
+        # 2. Token match: the span's words in order, separated by any run of
+        #    non-word characters. Anchors a span whose raw phrasing differs only
+        #    by punctuation/whitespace; deliberately conservative (no fuzzy word
+        #    edits) so we never over-redact unrelated text.
+        tokens = re.findall(r"\w+", span)
+        if not tokens:
+            return text, False
+        pattern = re.compile(r"\W+".join(re.escape(t) for t in tokens), re.IGNORECASE)
+        if pattern.search(text):
+            return pattern.sub(placeholder, text), True
+
+        return text, False
+
+    # ---------------------------------------------------------------------
+    # Article 9 — completeness check (redact mode; HARD-FAILS)
+    # ---------------------------------------------------------------------
+    def _assert_no_article9_residue(
+        self, result: TalentScoringResult, transcript: Transcript, original_spans: list
+    ) -> None:
+        """
+        Hard guarantee for redact mode: no detected special-category span
+        survives into any persisted field — scored buckets, narrative, evidence
+        quotes, OR the raw columns. Raises Article9RedactionError (fail closed)
+        if one does, so the pipeline aborts before any BigQuery write.
+
+        This is the load-bearing safety net: front-door scoring is clean only if
+        the scrub worked, so a survivor MUST stop the write, not just log.
+        Runs while `original_spans` are still in local memory (they are dropped
+        from the persisted flags), so there is no other post-hoc way to verify.
+        """
+        if not original_spans:
+            return
+
+        haystack = "\n".join(
+            [
+                result.talent_narrative or "",
+                json.dumps(result.talent_now.model_dump(mode="json")),
+                json.dumps(result.talent_motivation.model_dump(mode="json")),
+                json.dumps(result.talent_market.model_dump(mode="json")),
+                json.dumps(result.talent_leads.model_dump(mode="json")),
+                json.dumps([m.model_dump(mode="json") for m in result.mentioned_companies]),
+                json.dumps([p.model_dump(mode="json") for p in result.perception_themes]),
+                json.dumps([a.model_dump(mode="json") for a in result.articulated_blockers]),
+                transcript.full_transcript or "",
+                transcript.enhanced_notes or "",
+                transcript.my_notes or "",
+                "\n".join(n.text for n in (transcript.notes or []) if n.text),
+            ]
+        ).lower()
+
+        for span in original_spans:
+            needle = (span or "").strip().lower()
+            if needle and needle in haystack:
+                raise Article9RedactionError(
+                    f"Article 9 redaction incomplete for meeting "
+                    f"{result.meeting_id}: a detected special-category span "
+                    f"survived the scrub and would be persisted. Refusing to "
+                    f"write (fail closed). Span preview: {needle[:24]!r}…"
+                )
 
     # ---------------------------------------------------------------------
     # Employment-status invariant enforcement
