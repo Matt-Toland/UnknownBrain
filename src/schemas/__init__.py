@@ -33,6 +33,10 @@ from .talent_schemas import (
     PerceptionTheme_Polarity,
     ArticulatedBlocker,
     ArticulatedBlockerCategory,
+    Article9Category,
+    Article9RawScrubStatus,
+    Article9Flag,
+    Article9Detection,
     TalentStructuredExtraction,
     TalentScoringResult,
 )
@@ -72,6 +76,10 @@ __all__ = [
     "PerceptionTheme_Polarity",
     "ArticulatedBlocker",
     "ArticulatedBlockerCategory",
+    "Article9Category",
+    "Article9RawScrubStatus",
+    "Article9Flag",
+    "Article9Detection",
     "TalentStructuredExtraction",
     "TalentScoringResult",
 ]

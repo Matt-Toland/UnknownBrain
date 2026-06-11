@@ -200,6 +200,76 @@ class ArticulatedBlocker(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Article 9 — special-category data handling (UK GDPR Art. 9)
+# ---------------------------------------------------------------------------
+# The nine special categories. Detected during a dedicated pre-scoring pass on
+# the ORIGINAL transcript text (talent domain only). Either flagged as metadata
+# (default) or scrubbed at the front door before scoring (redact mode) so the
+# scored fields are clean by construction. See TalentScorer for the write-gate.
+Article9Category = Literal[
+    "racial_or_ethnic_origin",
+    "political_opinions",
+    "religious_or_philosophical_beliefs",
+    "trade_union_membership",
+    "genetic_data",
+    "biometric_data",
+    "health",
+    "sex_life",
+    "sexual_orientation",
+]
+
+# Did the front-door scrub confirm the span was removed from the raw text?
+# `confirmed` — span located and replaced. `partial` — span detected but could
+# not be anchored in the raw phrasing to remove (must be visible, never silently
+# assumed clean). Only meaningful in redact mode; None in flag mode.
+Article9RawScrubStatus = Literal["confirmed", "partial"]
+
+
+class Article9Flag(BaseModel):
+    """
+    One special-category reference detected in a talent transcript.
+
+    `category`, `span`, `location`, `confidence` are LLM-emitted by the
+    detection pass. `redacted` and `raw_scrub` are COMPUTED IN CODE (the LLM is
+    told not to set them) — mirroring the comp `plausible` pattern. In redact
+    mode the verbatim `span` is dropped (set None) before persistence so the
+    special-category text itself is never stored; the metadata (category +
+    location + redacted) still records that it was present and where.
+    """
+    category: Article9Category = Field(..., description="Which Article 9 special category")
+    span: Optional[str] = Field(
+        None,
+        description="Verbatim span referencing the category. Dropped (None) once redacted.",
+    )
+    location: str = Field(
+        ...,
+        description="Where it appeared in the source (e.g. 'full_transcript', 'enhanced_notes', or a short locator).",
+    )
+    confidence: float = Field(
+        ..., ge=0.0, le=1.0, description="Detector confidence 0–1"
+    )
+    redacted: bool = Field(
+        False, description="COMPUTED IN CODE — do not set. True once the span was scrubbed before persistence."
+    )
+    raw_scrub: Optional[Article9RawScrubStatus] = Field(
+        None,
+        description="COMPUTED IN CODE — do not set. 'confirmed' once a re-detection pass came back clean for the category; 'partial' otherwise (redact mode only).",
+    )
+    redact_rounds: Optional[int] = Field(
+        None,
+        description="COMPUTED IN CODE — do not set. Number of scrub+re-detect rounds it took to verify the text clean (redact mode only). Near-miss visibility.",
+    )
+
+
+class Article9Detection(BaseModel):
+    """Response shape for the dedicated Article 9 detection pass."""
+    flags: List[Article9Flag] = Field(
+        default_factory=list,
+        description="Every Article 9 special-category reference found in the transcript (empty if none).",
+    )
+
+
+# ---------------------------------------------------------------------------
 # Pass 1 response schema — everything the structured-extraction call returns
 # ---------------------------------------------------------------------------
 class TalentStructuredExtraction(BaseModel):
@@ -245,6 +315,11 @@ class TalentScoringResult(BaseModel):
 
     # Pass 2 — narrative prose
     talent_narrative: str
+
+    # Article 9 special-category handling metadata (talent only). Always
+    # populated by the detection pass; in redact mode each flag's verbatim
+    # `span` is dropped and `redacted=True`.
+    article9_flags: List[Article9Flag] = Field(default_factory=list)
 
     # Processing metadata
     scored_at: datetime
