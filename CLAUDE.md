@@ -99,6 +99,51 @@ Each criterion includes:
 - Evidence: Verbatim quote from transcript
 - Coaching note: Specific improvement suggestion
 
+## Talent Scoring Domain (2026)
+
+The pipeline now serves **two scoring domains** that share the one `meeting_intel`
+BigQuery table, distinguished by the `scoring_domain` column and routed by `source`
+(see `src/router.py`):
+
+- **client** — the opportunity + salesperson assessment above (recruiter↔client calls).
+- **talent** — candidate intelligence from recruiter↔candidate calls (`src/scorers/talent_scorer.py`).
+
+A talent write only ever sets `talent_*` columns and a client write only ever sets
+client columns (domain-aware MERGE in `src/bq_loader.py`), so the two domains never
+clobber each other. Schemas live in `src/schemas/talent_schemas.py`.
+
+### TalentScorer (two-pass)
+1. **Pass 1** — structured extraction into six talent buckets (now / triggers /
+   motivation / market / leads) plus three intelligence-report extensions
+   (mentioned_companies, perception_themes, articulated_blockers), controlled
+   vocabularies enforced via OpenAI structured outputs.
+2. **Pass 2** — narrative candidate brief, fed the Pass-1 output (not the raw transcript).
+
+Deterministic post-passes: company canonicalisation, employment-status invariants,
+and **comp normalization** (`current/expected_comp_structured` — currency/amount/period
+parsed for aggregate salary-trend reporting; `plausible` flagged in code).
+
+### Article 9 special-category handling (talent only)
+GDPR special-category layer. A pre-scoring detection pass emits `article9_flags`
+(category / span / location / confidence). `ARTICLE9_MODE` (env) governs writes:
+- **`flag` (default, always safe)** — records the flags as metadata; nothing removed.
+- **`redact`** — front-door scrub: detected spans removed from the raw transcript
+  *before* scoring, so buckets / narrative / quotes inherit clean input. Runs
+  **scrub-until-clean** (re-detect + scrub, bounded) with **confidence-floored
+  convergence**; if confident special-category data persists past the bound it
+  **fails closed** (permanent failure, row not written — never leaked).
+
+Client/sales scoring is untouched by this layer. Env knobs:
+`ARTICLE9_MODE` (`flag`|`redact`), `ARTICLE9_CONVERGENCE_MIN_CONFIDENCE` (0.7),
+`ARTICLE9_MAX_REDACT_ROUNDS` (5). Migration: `scripts/migrate_bq_add_article9.py`.
+
+### Production ingestion
+In prod, meetings arrive via a **Granola-API poller → brain-uploader → GCS → CloudEvent**
+path (not the local CLI). `main.py` `process_pipeline` claims the meeting (atomic GCS
+claim, dedup), scores by domain, and MERGE-upserts into `meeting_intel`. Transient LLM
+errors retry then 503→Eventarc-redeliver; permanent errors (poison id, Article 9
+non-convergence) ACK without redelivery.
+
 ### Data Model
 
 Canonical JSON schema in `src/schemas.py`:

@@ -1,6 +1,6 @@
 # UNKNOWN Brain — LLM-Powered Transcript Scoring
 
-An intelligent scoring system that uses OpenAI's GPT-5 and GPT-4o models to analyze meeting transcripts and identify business opportunities for UNKNOWN's talent services. Features BigQuery integration for analytics and advanced duplicate prevention.
+An intelligent scoring system that uses OpenAI's GPT-5 and GPT-4o models to analyze meeting transcripts across two domains — **client** opportunity/salesperson scoring and **talent** candidate intelligence (with a GDPR Article 9 special-category layer). Features BigQuery integration for analytics and advanced duplicate prevention.
 
 ## Quick Start
 
@@ -124,6 +124,36 @@ Each transcript is evaluated across 5 criteria using GPT models:
 5. **FIT** (1 point): Matches UNKNOWN services (Talent/Evolve/Ventures)
 
 **Qualified threshold**: ≥3/5 points
+
+## Talent Domain & Article 9 (2026)
+
+Beyond the client opportunity scoring above, the system runs a second **talent** scoring
+domain over recruiter↔candidate calls. Both domains share one BigQuery `meeting_intel`
+table, distinguished by a `scoring_domain` column and routed automatically by `source`.
+
+**TalentScorer** (`src/scorers/talent_scorer.py`) is a two-pass extractor: structured
+candidate intelligence (role/seniority, motivation, market reality, companies & perceptions,
+blockers — controlled vocabularies enforced via structured outputs) plus a narrative brief.
+Compensation is normalized into structured form (`current/expected_comp_structured`:
+currency / amount / period, with a code-computed `plausible` flag) for aggregate
+salary-trend reporting.
+
+**Article 9 special-category handling** (talent only) is a GDPR layer that detects
+special-category mentions (health, racial/ethnic origin, religion, sexual orientation, etc.)
+during scoring. `ARTICLE9_MODE` governs the write behaviour:
+
+| Mode | Behaviour |
+|------|-----------|
+| **`flag`** (default, always safe) | Records `article9_flags` metadata (category / location / confidence). Nothing removed — buckets, narrative, quotes, raw text all written unchanged. |
+| **`redact`** (opt-in toggle) | Front-door scrub: detected spans removed from the raw transcript *before* scoring, so every scored field is clean by construction. Runs scrub-until-clean with confidence-floored convergence; **fails closed** (row not written) if confident special-category data can't be cleared. |
+
+Redact is **off by default** and must be explicitly enabled via `ARTICLE9_MODE=redact`.
+Env knobs: `ARTICLE9_CONVERGENCE_MIN_CONFIDENCE` (default `0.7`),
+`ARTICLE9_MAX_REDACT_ROUNDS` (default `5`).
+
+> Production runs via a Granola-API poller → brain-uploader → GCS → CloudEvent path
+> (`main.py` `process_pipeline`), not the local CLI. The CLI flow below is for local
+> client-domain processing.
 
 ## CLI Commands
 
