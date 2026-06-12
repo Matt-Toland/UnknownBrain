@@ -144,12 +144,18 @@ during scoring. `ARTICLE9_MODE` governs the write behaviour:
 
 | Mode | Behaviour |
 |------|-----------|
-| **`flag`** (default, always safe) | Records `article9_flags` metadata (category / location / confidence). Nothing removed — buckets, narrative, quotes, raw text all written unchanged. |
-| **`redact`** (opt-in toggle) | Front-door scrub: detected spans removed from the raw transcript *before* scoring, so every scored field is clean by construction. Runs scrub-until-clean with confidence-floored convergence; **fails closed** (row not written) if confident special-category data can't be cleared. |
+| **`flag`** (default) | Detects and records `article9_flags` metadata (category / location / confidence). **Nothing is removed — all special-category data is RETAINED** (buckets, narrative, quotes, raw text written unchanged). This labels the data; it does not protect it. |
+| **`redact`** (opt-in toggle) | Front-door scrub: detected spans removed from the raw transcript *before* scoring, so every scored field is clean by construction. Runs scrub-until-clean with confidence-floored convergence. If confident special-category data can't be cleared, the meeting is **dropped** (default `ARTICLE9_REDACT_ON_FAILURE=drop` — not stored, logged `ARTICLE9_REDACT_DROP`) so nothing sensitive is retained. |
 
 Redact is **off by default** and must be explicitly enabled via `ARTICLE9_MODE=redact`.
 Env knobs: `ARTICLE9_CONVERGENCE_MIN_CONFIDENCE` (default `0.7`),
-`ARTICLE9_MAX_REDACT_ROUNDS` (default `5`).
+`ARTICLE9_MAX_REDACT_ROUNDS` (default `5`),
+`ARTICLE9_REDACT_ON_FAILURE` (default `drop`; `fallback` retains-and-marks, off).
+The row outcome is recorded in the `article9_status` column (`flag` | `redacted` | `redact_fallback`).
+
+> **Note:** in the default `flag` mode the Brain **retains** special-category data (it is
+> detected and labelled, not removed). Stripping it requires enabling `redact`, and is
+> forward-only — existing rows and stored transcripts are unaffected.
 
 > Production runs via a Granola-API poller → brain-uploader → GCS → CloudEvent path
 > (`main.py` `process_pipeline`), not the local CLI. The CLI flow below is for local
