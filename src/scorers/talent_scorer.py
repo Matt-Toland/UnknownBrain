@@ -151,14 +151,15 @@ ARTICLE9_CONVERGENCE_MIN_CONFIDENCE = float(os.getenv("ARTICLE9_CONVERGENCE_MIN_
 
 
 # What to do when redact mode CANNOT clean a transcript within the bound:
-#   fallback (default) — store the meeting in flag behaviour (data retained +
-#       flagged for manual review), never drop it. A saturated transcript keeps
-#       its non-sensitive value (role/comp/companies) and is visible for handling.
-#   drop — fail closed: do not store the row at all (strict no-retention).
-# The choice is a controller/DPO decision; default to never-lose-a-meeting.
+#   drop (default) — fail closed: do not store the row at all. Nothing sensitive
+#       is ever kept. The rare un-cleanable meeting is dropped (logged via
+#       ARTICLE9_REDACT_DROP so it's visible), not retained.
+#   fallback — store the meeting in flag behaviour (data retained, marked
+#       redact_fallback). Only appropriate where a process exists to act on those
+#       rows; for this deployment there is none, so it is NOT the default.
 def _article9_on_failure() -> str:
-    v = os.getenv("ARTICLE9_REDACT_ON_FAILURE", "fallback").strip().lower()
-    return v if v in ("fallback", "drop") else "fallback"
+    v = os.getenv("ARTICLE9_REDACT_ON_FAILURE", "drop").strip().lower()
+    return v if v in ("fallback", "drop") else "drop"
 
 
 class Article9RedactionError(RuntimeError):
@@ -455,21 +456,23 @@ class TalentScorer:
                 )
             except Article9RedactionError:
                 if _article9_on_failure() == "drop":
-                    # Strict no-retention: fail closed, do not store the row.
+                    # Default: strict no-retention — fail closed, do not store
+                    # the row. The drop is logged (ARTICLE9_REDACT_DROP) by the
+                    # pipeline so it's visible. Nothing sensitive is kept.
                     raise
-                # Fallback: never lose the meeting. Restore the original text and
+                # Non-default (opt-in) fallback: restore the original text and
                 # the pristine (unredacted) flags, and store as flag behaviour —
-                # data retained + flagged for manual review. Marked so it's
-                # monitorable. The residue check is skipped (we deliberately
-                # retained the data).
+                # data retained, marked redact_fallback so it's queryable. Only
+                # appropriate where a process exists to act on these rows; the
+                # residue check is skipped (data deliberately retained).
                 self._restore_text(transcript, text_snapshot)
                 article9_flags = flag_snapshot
                 original_spans = []
                 article9_status = "redact_fallback"
                 logger.warning(
                     f"ARTICLE9_REDACT_FALLBACK meeting={transcript.meeting_id}: "
-                    f"redaction did not converge; stored with data RETAINED + "
-                    f"flagged for manual review (not dropped)."
+                    f"redaction did not converge; on-failure=fallback so the row "
+                    f"was stored with data RETAINED (not dropped)."
                 )
 
         context = self._format_transcript(transcript)
