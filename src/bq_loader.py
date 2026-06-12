@@ -160,6 +160,7 @@ class BigQueryLoader:
 
             # Article 9 special-category handling metadata (talent only; empty on client rows).
             bigquery.SchemaField("article9_flags", "JSON", mode="REPEATED", description="{category, location, confidence, redacted, raw_scrub} — UK GDPR Art.9 detection/redaction metadata"),
+            bigquery.SchemaField("article9_status", "STRING", mode="NULLABLE", description="flag | redacted | redact_fallback — Art.9 row outcome (redact_fallback = retained, needs review)"),
         ]
 
         table = bigquery.Table(table_id, schema=schema)
@@ -451,7 +452,8 @@ class BigQueryLoader:
                 mentioned_companies = source.mentioned_companies,
                 perception_themes = source.perception_themes,
                 articulated_blockers = source.articulated_blockers,
-                article9_flags = source.article9_flags
+                article9_flags = source.article9_flags,
+                article9_status = source.article9_status
         WHEN NOT MATCHED THEN
             INSERT ROW
         """
