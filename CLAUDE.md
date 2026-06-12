@@ -126,16 +126,20 @@ parsed for aggregate salary-trend reporting; `plausible` flagged in code).
 ### Article 9 special-category handling (talent only)
 GDPR special-category layer. A pre-scoring detection pass emits `article9_flags`
 (category / span / location / confidence). `ARTICLE9_MODE` (env) governs writes:
-- **`flag` (default, always safe)** — records the flags as metadata; nothing removed.
+- **`flag` (default)** — records the flags as metadata; nothing removed, all
+  special-category data is **RETAINED** (labelled, not protected).
 - **`redact`** — front-door scrub: detected spans removed from the raw transcript
   *before* scoring, so buckets / narrative / quotes inherit clean input. Runs
   **scrub-until-clean** (re-detect + scrub, bounded) with **confidence-floored
-  convergence**; if confident special-category data persists past the bound it
-  **fails closed** (permanent failure, row not written — never leaked).
+  convergence**; if confident special-category data persists past the bound the
+  meeting is **dropped** (`ARTICLE9_REDACT_ON_FAILURE=drop`, the default — not
+  stored, logged `ARTICLE9_REDACT_DROP`) so nothing sensitive is retained.
 
-Client/sales scoring is untouched by this layer. Env knobs:
-`ARTICLE9_MODE` (`flag`|`redact`), `ARTICLE9_CONVERGENCE_MIN_CONFIDENCE` (0.7),
-`ARTICLE9_MAX_REDACT_ROUNDS` (5). Migration: `scripts/migrate_bq_add_article9.py`.
+Client/sales scoring is untouched by this layer. Row outcome → `article9_status`
+column (`flag`|`redacted`|`redact_fallback`). Env knobs: `ARTICLE9_MODE`
+(`flag`|`redact`), `ARTICLE9_REDACT_ON_FAILURE` (`drop` default | `fallback`),
+`ARTICLE9_CONVERGENCE_MIN_CONFIDENCE` (0.7), `ARTICLE9_MAX_REDACT_ROUNDS` (5).
+Migrations: `scripts/migrate_bq_add_article9*.py`.
 
 ### Production ingestion
 In prod, meetings arrive via a **Granola-API poller → brain-uploader → GCS → CloudEvent**
