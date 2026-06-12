@@ -150,6 +150,17 @@ ARTICLE9_MAX_REDACT_ROUNDS = int(os.getenv("ARTICLE9_MAX_REDACT_ROUNDS", "5"))
 ARTICLE9_CONVERGENCE_MIN_CONFIDENCE = float(os.getenv("ARTICLE9_CONVERGENCE_MIN_CONFIDENCE", "0.7"))
 
 
+# What to do when redact mode CANNOT clean a transcript within the bound:
+#   fallback (default) — store the meeting in flag behaviour (data retained +
+#       flagged for manual review), never drop it. A saturated transcript keeps
+#       its non-sensitive value (role/comp/companies) and is visible for handling.
+#   drop — fail closed: do not store the row at all (strict no-retention).
+# The choice is a controller/DPO decision; default to never-lose-a-meeting.
+def _article9_on_failure() -> str:
+    v = os.getenv("ARTICLE9_REDACT_ON_FAILURE", "fallback").strip().lower()
+    return v if v in ("fallback", "drop") else "fallback"
+
+
 class Article9RedactionError(RuntimeError):
     """
     Raised in redact mode when a detected special-category span survives the
@@ -426,18 +437,40 @@ class TalentScorer:
         # BEFORE scoring so redact mode can scrub at the front door.
         article9_flags = self._detect_article9(transcript)
         original_spans: list = []
+        article9_status = "flag" if mode == "flag" else "redacted"
 
         if mode == "redact" and article9_flags:
-            # Front-door scrub-until-clean: scrub, then re-detect on the scrubbed
-            # text and scrub anything new, bounded to ARTICLE9_MAX_REDACT_ROUNDS.
-            # Guarantees a re-detection pass comes back clean (or fails closed),
-            # so repeated/alternate phrasings of the same fact don't survive.
-            # Mutates the transcript IN PLACE so both the scorer and the raw-
-            # column writer (same object) inherit clean input. `original_spans`
-            # accumulates every detected span across rounds for the final check.
-            article9_flags, original_spans = self._redact_to_clean(
-                transcript, article9_flags
-            )
+            # Snapshot the original text + pristine flags BEFORE scrubbing, so a
+            # non-convergence can fall back to flag behaviour cleanly.
+            text_snapshot = self._snapshot_text(transcript)
+            flag_snapshot = [f.model_copy(deep=True) for f in article9_flags]
+            try:
+                # Front-door scrub-until-clean: scrub, re-detect on the scrubbed
+                # text, scrub anything new (bounded). Mutates the transcript IN
+                # PLACE so both the scorer and the raw-column writer (same object)
+                # inherit clean input. Raises Article9RedactionError if confident
+                # special-category data can't be cleared within the bound.
+                article9_flags, original_spans = self._redact_to_clean(
+                    transcript, article9_flags
+                )
+            except Article9RedactionError:
+                if _article9_on_failure() == "drop":
+                    # Strict no-retention: fail closed, do not store the row.
+                    raise
+                # Fallback: never lose the meeting. Restore the original text and
+                # the pristine (unredacted) flags, and store as flag behaviour —
+                # data retained + flagged for manual review. Marked so it's
+                # monitorable. The residue check is skipped (we deliberately
+                # retained the data).
+                self._restore_text(transcript, text_snapshot)
+                article9_flags = flag_snapshot
+                original_spans = []
+                article9_status = "redact_fallback"
+                logger.warning(
+                    f"ARTICLE9_REDACT_FALLBACK meeting={transcript.meeting_id}: "
+                    f"redaction did not converge; stored with data RETAINED + "
+                    f"flagged for manual review (not dropped)."
+                )
 
         context = self._format_transcript(transcript)
 
@@ -474,15 +507,18 @@ class TalentScorer:
             articulated_blockers=extraction.articulated_blockers,
             talent_narrative=narrative,
             article9_flags=article9_flags,
+            article9_status=article9_status,
             scored_at=datetime.now(timezone.utc),
             llm_model=self.model,
         )
 
-        if mode == "redact":
-            # Load-bearing hard check. In front-door redaction the scored fields
-            # are clean ONLY if the scrub worked — if a span slipped through it
-            # flowed into the buckets/quotes/narrative, and this is the only
-            # catch. Raises (fail closed) so a leak is never persisted.
+        if mode == "redact" and article9_status == "redacted":
+            # Load-bearing hard check (only when we actually redacted — a
+            # fallback row deliberately retains the data). In front-door
+            # redaction the scored fields are clean ONLY if the scrub worked —
+            # if a span slipped through it flowed into the buckets/quotes/
+            # narrative, and this is the only catch. Raises (fail closed) so a
+            # leak is never persisted.
             self._assert_no_article9_residue(result, transcript, original_spans)
 
         return result
@@ -757,6 +793,28 @@ class TalentScorer:
             return pattern.sub(placeholder, text), True
 
         return text, False
+
+    # ---------------------------------------------------------------------
+    # Article 9 — text snapshot/restore (supports the flag-fallback path)
+    # ---------------------------------------------------------------------
+    @staticmethod
+    def _snapshot_text(transcript: Transcript) -> dict:
+        """Capture the raw text fields before front-door scrubbing mutates them."""
+        return {
+            "full_transcript": transcript.full_transcript,
+            "enhanced_notes": transcript.enhanced_notes,
+            "my_notes": transcript.my_notes,
+            "notes": [n.text for n in (transcript.notes or [])],
+        }
+
+    @staticmethod
+    def _restore_text(transcript: Transcript, snapshot: dict) -> None:
+        """Restore the original raw text (used when redact falls back to flag)."""
+        transcript.full_transcript = snapshot["full_transcript"]
+        transcript.enhanced_notes = snapshot["enhanced_notes"]
+        transcript.my_notes = snapshot["my_notes"]
+        for note, text in zip(transcript.notes or [], snapshot["notes"]):
+            note.text = text
 
     # ---------------------------------------------------------------------
     # Article 9 — scrub-until-clean loop (redact mode; HARD-FAILS on no converge)

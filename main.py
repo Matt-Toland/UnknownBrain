@@ -725,10 +725,13 @@ async def process_pipeline(
         # IS a special category. Fail CLOSED and PERMANENT: never write the row,
         # and ACK (2xx) so Eventarc does NOT redeliver into repeated minutes-long
         # redact attempts that will keep failing on genuinely-pervasive data.
-        # Surfaced as a failed status for manual handling / quarantine.
+        # Surfaced as a failed status for manual handling / quarantine. Only
+        # reached when ARTICLE9_REDACT_ON_FAILURE=drop (strict no-retention);
+        # the default is fallback, which stores the row instead (see scorer).
         logger.error(
-            f"Article 9 redaction did not converge for {meeting_id}; failing "
-            f"closed — row NOT written, needs manual handling: {e}"
+            f"ARTICLE9_REDACT_DROP meeting={meeting_id}: redaction did not "
+            f"converge and on-failure=drop; row NOT written, needs manual "
+            f"handling: {e}"
         )
         processing_status[meeting_id].status = "failed"
         processing_status[meeting_id].error = str(e)
@@ -1012,6 +1015,10 @@ async def upload_talent_format_to_bigquery(
             # redact mode each flag's verbatim `span` is already dropped and the
             # raw columns above were scrubbed at the front door by the scorer.
             "article9_flags": [f.model_dump(mode="json") for f in talent_result.article9_flags],
+            # Row-level outcome: flag | redacted | redact_fallback. Query
+            # `article9_status='redact_fallback'` for meetings that couldn't be
+            # auto-redacted and were stored with data retained for manual review.
+            "article9_status": talent_result.article9_status,
         }
 
         temp_jsonl_path = Path(f"/tmp/{meeting_id}_talent.jsonl")

@@ -185,6 +185,7 @@ class TestArticle9FlagMode(unittest.TestCase):
         self.assertEqual(result.article9_flags[0].span, "diagnosed with epilepsy")
         self.assertFalse(result.article9_flags[0].redacted)
         self.assertIsNone(result.article9_flags[0].raw_scrub)
+        self.assertEqual(result.article9_status, "flag")
         # Raw transcript untouched; scored content intact.
         self.assertIn("epilepsy", t.full_transcript)
         self.assertNotIn("[REDACTED", t.full_transcript)
@@ -218,6 +219,7 @@ class TestArticle9RedactMode(unittest.TestCase):
         self.assertEqual(f.raw_scrub, "confirmed")
         self.assertIsNone(f.span)
         self.assertEqual(f.redact_rounds, 1)
+        self.assertEqual(result.article9_status, "redacted")
         # Scored fields carry no special-category text.
         self.assertNotIn("epilepsy", result.mentioned_companies[0].evidence_quote)
 
@@ -295,21 +297,49 @@ class TestArticle9RedactMode(unittest.TestCase):
             self.assertEqual(f.redact_rounds, 1)
 
     @patch("src.scorers.talent_scorer.OpenAI")
-    def test_bounded_loop_hard_fails_when_never_clean(self, mock_openai):
-        # Synthetic always-dirty input: re-detection keeps returning a category.
-        # The loop is bounded -> it must hard-fail (fail closed), never spin.
+    def test_bounded_loop_drops_when_never_clean_and_on_failure_drop(self, mock_openai):
+        # Synthetic always-dirty input + ARTICLE9_REDACT_ON_FAILURE=drop: the
+        # bounded loop must hard-fail (fail closed, no store), never spin.
         from src.scorers.talent_scorer import Article9RedactionError
         dirty = [Article9Flag(category="health", span="ongoing health issue",
                               location="full_transcript", confidence=0.9)]
         ext = _clean_extraction()
-        # max_rounds=2 -> round-0 + 2 re-detections, all dirty -> raise.
         _mock_client(mock_openai, [dirty, dirty, dirty], ext)
         scorer = _scorer()
         t = _transcript(full_transcript="There is an ongoing health issue to note.")
 
-        with patch.dict(os.environ, {"ARTICLE9_MODE": "redact", "ARTICLE9_MAX_REDACT_ROUNDS": "2"}):
+        with patch.dict(os.environ, {"ARTICLE9_MODE": "redact",
+                                     "ARTICLE9_MAX_REDACT_ROUNDS": "2",
+                                     "ARTICLE9_REDACT_ON_FAILURE": "drop"}):
             with self.assertRaises(Article9RedactionError):
                 scorer.score_transcript_new(t)
+
+    @patch("src.scorers.talent_scorer.OpenAI")
+    def test_nonconvergence_falls_back_to_flag_by_default(self, mock_openai):
+        # Default on-failure=fallback: a non-converging redact must NOT raise or
+        # drop. It restores the original text (data retained), keeps the flags
+        # with spans intact, marks the row redact_fallback, and stores it.
+        dirty = [Article9Flag(category="health", span="ongoing health issue",
+                              location="full_transcript", confidence=0.9)]
+        ext = _clean_extraction()
+        # round-0 + 2 re-detections all dirty (max_rounds=2) -> fallback, then
+        # the fallback scores on restored text (+1 extraction call).
+        _mock_client(mock_openai, [dirty, dirty, dirty], ext)
+        scorer = _scorer()
+        original = "There is an ongoing health issue to note."
+        t = _transcript(full_transcript=original)
+
+        with patch.dict(os.environ, {"ARTICLE9_MODE": "redact",
+                                     "ARTICLE9_MAX_REDACT_ROUNDS": "2"}):
+            result = scorer.score_transcript_new(t)
+
+        self.assertEqual(result.article9_status, "redact_fallback")
+        # Original text restored (data retained), spans intact, nothing redacted.
+        self.assertEqual(t.full_transcript, original)
+        self.assertNotIn("[REDACTED", t.full_transcript)
+        self.assertTrue(result.article9_flags)
+        self.assertTrue(all(f.span for f in result.article9_flags))
+        self.assertTrue(all(not f.redacted for f in result.article9_flags))
 
     @patch("src.scorers.talent_scorer.OpenAI")
     def test_residue_hard_fails(self, mock_openai):
@@ -386,7 +416,9 @@ class TestArticle9DomainIsolation(unittest.TestCase):
         talent_src = inspect.getsource(BigQueryLoader.merge_talent_jsonl_data)
         client_src = inspect.getsource(BigQueryLoader.merge_client_jsonl_data)
         self.assertIn("article9_flags = source.article9_flags", talent_src)
+        self.assertIn("article9_status = source.article9_status", talent_src)
         self.assertNotIn("article9_flags", client_src)
+        self.assertNotIn("article9_status", client_src)
 
     def test_client_scorer_has_no_article9(self):
         from src.scorers import TalentScorer
