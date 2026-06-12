@@ -297,9 +297,9 @@ class TestArticle9RedactMode(unittest.TestCase):
             self.assertEqual(f.redact_rounds, 1)
 
     @patch("src.scorers.talent_scorer.OpenAI")
-    def test_bounded_loop_drops_when_never_clean_and_on_failure_drop(self, mock_openai):
-        # Synthetic always-dirty input + ARTICLE9_REDACT_ON_FAILURE=drop: the
-        # bounded loop must hard-fail (fail closed, no store), never spin.
+    def test_nonconvergence_drops_by_default(self, mock_openai):
+        # DEFAULT behaviour (no ARTICLE9_REDACT_ON_FAILURE set): a non-converging
+        # redact must fail closed — raise, so the row is NOT stored. No retention.
         from src.scorers.talent_scorer import Article9RedactionError
         dirty = [Article9Flag(category="health", span="ongoing health issue",
                               location="full_transcript", confidence=0.9)]
@@ -308,17 +308,17 @@ class TestArticle9RedactMode(unittest.TestCase):
         scorer = _scorer()
         t = _transcript(full_transcript="There is an ongoing health issue to note.")
 
-        with patch.dict(os.environ, {"ARTICLE9_MODE": "redact",
-                                     "ARTICLE9_MAX_REDACT_ROUNDS": "2",
-                                     "ARTICLE9_REDACT_ON_FAILURE": "drop"}):
+        env = {"ARTICLE9_MODE": "redact", "ARTICLE9_MAX_REDACT_ROUNDS": "2"}
+        with patch.dict(os.environ, env):
+            os.environ.pop("ARTICLE9_REDACT_ON_FAILURE", None)  # ensure default
             with self.assertRaises(Article9RedactionError):
                 scorer.score_transcript_new(t)
 
     @patch("src.scorers.talent_scorer.OpenAI")
-    def test_nonconvergence_falls_back_to_flag_by_default(self, mock_openai):
-        # Default on-failure=fallback: a non-converging redact must NOT raise or
-        # drop. It restores the original text (data retained), keeps the flags
-        # with spans intact, marks the row redact_fallback, and stores it.
+    def test_nonconvergence_falls_back_only_when_explicitly_configured(self, mock_openai):
+        # Non-default: ARTICLE9_REDACT_ON_FAILURE=fallback stores the meeting with
+        # data retained (status redact_fallback). The fallback path is kept for
+        # completeness but is NOT the default.
         dirty = [Article9Flag(category="health", span="ongoing health issue",
                               location="full_transcript", confidence=0.9)]
         ext = _clean_extraction()
@@ -330,7 +330,8 @@ class TestArticle9RedactMode(unittest.TestCase):
         t = _transcript(full_transcript=original)
 
         with patch.dict(os.environ, {"ARTICLE9_MODE": "redact",
-                                     "ARTICLE9_MAX_REDACT_ROUNDS": "2"}):
+                                     "ARTICLE9_MAX_REDACT_ROUNDS": "2",
+                                     "ARTICLE9_REDACT_ON_FAILURE": "fallback"}):
             result = scorer.score_transcript_new(t)
 
         self.assertEqual(result.article9_status, "redact_fallback")

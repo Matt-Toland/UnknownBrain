@@ -160,7 +160,7 @@ class BigQueryLoader:
 
             # Article 9 special-category handling metadata (talent only; empty on client rows).
             bigquery.SchemaField("article9_flags", "JSON", mode="REPEATED", description="{category, location, confidence, redacted, raw_scrub} — UK GDPR Art.9 detection/redaction metadata"),
-            bigquery.SchemaField("article9_status", "STRING", mode="NULLABLE", description="flag | redacted | redact_fallback — Art.9 row outcome (redact_fallback = retained, needs review)"),
+            bigquery.SchemaField("article9_status", "STRING", mode="NULLABLE", description="flag | redacted | redact_fallback — Art.9 row outcome. Default on non-convergence is DROP (not stored); redact_fallback only if on-failure=fallback (non-default)."),
         ]
 
         table = bigquery.Table(table_id, schema=schema)

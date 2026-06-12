@@ -725,13 +725,13 @@ async def process_pipeline(
         # IS a special category. Fail CLOSED and PERMANENT: never write the row,
         # and ACK (2xx) so Eventarc does NOT redeliver into repeated minutes-long
         # redact attempts that will keep failing on genuinely-pervasive data.
-        # Surfaced as a failed status for manual handling / quarantine. Only
-        # reached when ARTICLE9_REDACT_ON_FAILURE=drop (strict no-retention);
-        # the default is fallback, which stores the row instead (see scorer).
+        # Default behaviour on non-convergence (ARTICLE9_REDACT_ON_FAILURE=drop):
+        # fail closed, nothing sensitive retained. The drop is logged here so it
+        # is visible to whoever watches the pipeline (silent drops are not
+        # acceptable). Returns permanent_failure → ACK, no Eventarc redelivery.
         logger.error(
             f"ARTICLE9_REDACT_DROP meeting={meeting_id}: redaction did not "
-            f"converge and on-failure=drop; row NOT written, needs manual "
-            f"handling: {e}"
+            f"converge; failing closed — row NOT written (no retention): {e}"
         )
         processing_status[meeting_id].status = "failed"
         processing_status[meeting_id].error = str(e)
@@ -1015,9 +1015,10 @@ async def upload_talent_format_to_bigquery(
             # redact mode each flag's verbatim `span` is already dropped and the
             # raw columns above were scrubbed at the front door by the scorer.
             "article9_flags": [f.model_dump(mode="json") for f in talent_result.article9_flags],
-            # Row-level outcome: flag | redacted | redact_fallback. Query
-            # `article9_status='redact_fallback'` for meetings that couldn't be
-            # auto-redacted and were stored with data retained for manual review.
+            # Row-level outcome: flag | redacted | redact_fallback. On
+            # non-convergence the default DROPS the meeting (not stored, logged
+            # ARTICLE9_REDACT_DROP); redact_fallback only appears if on-failure
+            # is explicitly set to fallback (non-default).
             "article9_status": talent_result.article9_status,
         }
 

@@ -273,10 +273,10 @@ class Article9Detection(BaseModel):
 #   flag            — flag mode: nothing removed, flags recorded as metadata.
 #   redacted        — redact mode: no confident special-category data remains
 #                     (stripped, or none was present).
-#   redact_fallback — redact mode could NOT clean the transcript within the bound,
-#                     so it fell back to flag behaviour: the meeting is STORED with
-#                     data retained + flagged, NOT dropped. These rows need manual
-#                     review — monitor their rate.
+#   redact_fallback — redact mode could NOT clean the transcript and on-failure
+#                     was set to `fallback` (NOT the default), so the meeting was
+#                     STORED with data retained. The default on non-convergence is
+#                     to DROP (not stored); see ARTICLE9_REDACT_ON_FAILURE.
 Article9Status = Literal["flag", "redacted", "redact_fallback"]
 
 
@@ -331,9 +331,9 @@ class TalentScoringResult(BaseModel):
     # populated by the detection pass; in redact mode each flag's verbatim
     # `span` is dropped and `redacted=True`.
     article9_flags: List[Article9Flag] = Field(default_factory=list)
-    # Row-level outcome (flag | redacted | redact_fallback). `redact_fallback`
-    # marks a meeting that could not be auto-redacted and was stored with data
-    # retained for manual review — the signal to monitor.
+    # Row-level outcome (flag | redacted | redact_fallback). On non-convergence
+    # the default is to DROP the meeting (not stored); `redact_fallback` only
+    # occurs if on-failure is explicitly set to `fallback`.
     article9_status: Optional[Article9Status] = None
 
     # Processing metadata
