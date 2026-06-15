@@ -42,7 +42,14 @@ steps:
       - '--concurrency=10'
       - '--port=8080'
       - '--no-cpu-throttling'  # Required: scoring runs in FastAPI BackgroundTasks after response returns
-      - '--set-env-vars=ENVIRONMENT=production'
+      # --update-env-vars (not --set-env-vars): adds/updates only these keys and
+      # leaves any other out-of-band env vars untouched. (OPENAI_API_KEY is a
+      # Secret Manager mount, so it's unaffected by either flag either way.)
+      # ARTICLE9_MODE=redact strips Article 9 special-category
+      # data from talent meetings before storage (approved by UNKNOWN 15 Jun 2026);
+      # un-cleanable meetings fail closed + are dropped/logged, never stored
+      # (ARTICLE9_REDACT_ON_FAILURE defaults to 'drop').
+      - '--update-env-vars=ENVIRONMENT=production,ARTICLE9_MODE=redact'
       # Note: OPENAI_API_KEY should be set separately via gcloud or Cloud Console
 
 # Store images in Artifact Registry

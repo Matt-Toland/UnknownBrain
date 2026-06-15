@@ -126,7 +126,7 @@ parsed for aggregate salary-trend reporting; `plausible` flagged in code).
 ### Article 9 special-category handling (talent only)
 GDPR special-category layer. A pre-scoring detection pass emits `article9_flags`
 (category / span / location / confidence). `ARTICLE9_MODE` (env) governs writes:
-- **`flag` (default)** — records the flags as metadata; nothing removed, all
+- **`flag` (code default)** — records the flags as metadata; nothing removed, all
   special-category data is **RETAINED** (labelled, not protected).
 - **`redact`** — front-door scrub: detected spans removed from the raw transcript
   *before* scoring, so buckets / narrative / quotes inherit clean input. Runs
@@ -135,6 +135,8 @@ GDPR special-category layer. A pre-scoring detection pass emits `article9_flags`
   meeting is **dropped** (`ARTICLE9_REDACT_ON_FAILURE=drop`, the default — not
   stored, logged `ARTICLE9_REDACT_DROP`) so nothing sensitive is retained.
 
+**Production: `redact` is enabled** (Cloud Run + `cloudbuild.yaml`) since 2026-06-15, so
+new talent meetings are stripped before storage (forward-only; existing rows untouched).
 Client/sales scoring is untouched by this layer. Row outcome → `article9_status`
 column (`flag`|`redacted`|`redact_fallback`). Env knobs: `ARTICLE9_MODE`
 (`flag`|`redact`), `ARTICLE9_REDACT_ON_FAILURE` (`drop` default | `fallback`),

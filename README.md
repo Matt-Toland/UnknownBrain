@@ -101,12 +101,15 @@ unknown-brain/
 │   ├── transcripts/          # Meeting transcript files (.md, .txt from Granola)
 │   └── json/                 # Processed JSON files
 ├── src/
-│   ├── llm_scorer.py        # Multi-model LLM scoring (GPT-5, GPT-4o)
-│   ├── bq_loader.py         # BigQuery integration with duplicate prevention
+│   ├── llm_scorer.py        # Client-domain multi-model LLM scoring (GPT-5, GPT-4o)
+│   ├── scorers/             # ClientScorer + TalentScorer (talent + Article 9 layer)
+│   ├── router.py            # Routes a meeting to client vs talent domain by source
+│   ├── bq_loader.py         # BigQuery integration (domain-aware MERGE, duplicate prevention)
 │   ├── cli.py               # Command interface with model comparison
-│   ├── schemas.py           # Data models and BigQuery schemas
+│   ├── schemas/             # Pydantic models (client_schemas.py + talent_schemas.py)
 │   ├── scoring.py           # Output generation (JSON, CSV, MD, JSONL)
 │   └── importers/           # PlaintextImporter + GranolaDriveImporter
+├── main.py                  # Production pipeline (Granola poller → GCS → CloudEvent)
 ├── out/                     # Scoring results + BigQuery exports
 ├── tests/                   # Test suite
 ├── gcp_service_account_creds.json  # BigQuery credentials (not in repo)
@@ -147,7 +150,11 @@ during scoring. `ARTICLE9_MODE` governs the write behaviour:
 | **`flag`** (default) | Detects and records `article9_flags` metadata (category / location / confidence). **Nothing is removed — all special-category data is RETAINED** (buckets, narrative, quotes, raw text written unchanged). This labels the data; it does not protect it. |
 | **`redact`** (opt-in toggle) | Front-door scrub: detected spans removed from the raw transcript *before* scoring, so every scored field is clean by construction. Runs scrub-until-clean with confidence-floored convergence. If confident special-category data can't be cleared, the meeting is **dropped** (default `ARTICLE9_REDACT_ON_FAILURE=drop` — not stored, logged `ARTICLE9_REDACT_DROP`) so nothing sensitive is retained. |
 
-Redact is **off by default** and must be explicitly enabled via `ARTICLE9_MODE=redact`.
+The **code default is `flag`**; redact must be explicitly enabled via `ARTICLE9_MODE=redact`.
+**Production note:** redact is **enabled in production** as of 2026-06-15 (set on the
+`unknown-brain` Cloud Run service and in `cloudbuild.yaml`), so new talent meetings are
+stripped before storage. The change is forward-only — existing rows and stored transcripts
+are unaffected.
 Env knobs: `ARTICLE9_CONVERGENCE_MIN_CONFIDENCE` (default `0.7`),
 `ARTICLE9_MAX_REDACT_ROUNDS` (default `5`),
 `ARTICLE9_REDACT_ON_FAILURE` (default `drop`; `fallback` retains-and-marks, off).
