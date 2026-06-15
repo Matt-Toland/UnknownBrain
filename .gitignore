@@ -28,6 +28,13 @@ __pycache__/
 ehthumbs.db
 Thumbs.db
 
+# Claude Code local config (permissions, session locks)
+.claude/
+
+# Local working docs (commercial / client-facing — not part of the codebase)
+ARTICLE9_SCOPE_AND_COSTING.md
+CLIENT_SUMMARY_UNKNOWN_Brain.md
+
 # Project specific
 data/transcripts/*
 !data/transcripts/.gitkeep
